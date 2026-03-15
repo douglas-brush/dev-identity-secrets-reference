@@ -1,0 +1,2 @@
+# Ceremony output — never commit generated keys, certs, or shares
+ceremony-output/
