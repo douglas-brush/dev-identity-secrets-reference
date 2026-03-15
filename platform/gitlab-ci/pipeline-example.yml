@@ -1,0 +1,314 @@
+# GitLab CI full pipeline example: Build -> Test -> Deploy with Vault OIDC
+#
+# Demonstrates:
+#   - OIDC-based Vault authentication (zero static secrets)
+#   - Per-stage short-lived Vault tokens (not shared across stages)
+#   - Secret scanning with gitleaks
+#   - SOPS decryption in the deploy stage
+#   - Proper secret masking and cleanup
+#
+# Adjust REPLACE_ placeholders before use.
+
+# ---------------------------------------------------------------------------
+# Include the reusable OIDC auth job from the same directory
+# ---------------------------------------------------------------------------
+include:
+  - local: 'platform/gitlab-ci/vault-oidc-auth.yml'
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+variables:
+  VAULT_ADDR: "REPLACE_VAULT_ADDR"                 # https://vault.example.com
+  VAULT_AUTH_PATH: "jwt/gitlab"
+  SOPS_VERSION: "3.9.0"
+  CONTAINER_REGISTRY: "${CI_REGISTRY}"
+  IMAGE_NAME: "${CI_REGISTRY_IMAGE}"
+
+stages:
+  - scan
+  - build
+  - test
+  - deploy
+
+# ---------------------------------------------------------------------------
+# Stage: Scan — detect leaked secrets before anything else
+# ---------------------------------------------------------------------------
+secret-scan:
+  stage: scan
+  image: zricethezav/gitleaks:latest
+  # No Vault auth needed — this job only reads source code.
+  script:
+    - |
+      echo "Running gitleaks secret scan..."
+      gitleaks detect \
+        --source="${CI_PROJECT_DIR}" \
+        --report-path="gitleaks-report.json" \
+        --report-format=json \
+        --exit-code=1 \
+        --verbose || {
+          echo "SECRET LEAK DETECTED — pipeline will fail."
+          echo "Review gitleaks-report.json for details."
+          exit 1
+        }
+      echo "No secrets detected in source."
+  artifacts:
+    paths:
+      - gitleaks-report.json
+    when: always
+    expire_in: 30 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+# ---------------------------------------------------------------------------
+# Stage: Build — compile, test unit, push image
+# ---------------------------------------------------------------------------
+build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  extends: .vault-oidc-auth
+  variables:
+    VAULT_ROLE: "REPLACE_VAULT_ROLE_BUILD"          # Role scoped to build secrets
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - set -euo pipefail
+
+    # Fetch build-time secrets from Vault (e.g. private registry creds, signing keys)
+    - |
+      echo "Fetching build secrets from Vault..."
+      BUILD_SECRETS=$(vault kv get -format=json kv/data/ci/build-config 2>/dev/null || echo '{}')
+      # Export only specific keys — never dump entire secret payloads to env
+      PRIVATE_REGISTRY_TOKEN=$(echo "${BUILD_SECRETS}" | jq -r '.data.data.registry_token // empty')
+      if [[ -n "${PRIVATE_REGISTRY_TOKEN}" ]]; then
+        echo "Private registry token available for build."
+      fi
+
+    # Login to GitLab container registry (uses CI_JOB_TOKEN — no static creds)
+    - |
+      echo "${CI_JOB_TOKEN}" | docker login -u "${CI_REGISTRY_USER}" \
+        --password-stdin "${CI_REGISTRY}"
+
+    # Build the image
+    - |
+      SHORT_SHA=$(echo "${CI_COMMIT_SHA}" | cut -c1-8)
+      IMAGE_TAG="${CI_COMMIT_REF_SLUG}-${SHORT_SHA}"
+      FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+      echo "Building: ${FULL_IMAGE}"
+      docker build \
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
+        -t "${FULL_IMAGE}" \
+        -t "${IMAGE_NAME}:${CI_COMMIT_REF_SLUG}-latest" \
+        .
+      docker push "${FULL_IMAGE}"
+      docker push "${IMAGE_NAME}:${CI_COMMIT_REF_SLUG}-latest"
+      echo "IMAGE_TAG=${IMAGE_TAG}" > build.env
+
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 hour
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ---------------------------------------------------------------------------
+# Stage: Test — integration tests that need real service credentials
+# ---------------------------------------------------------------------------
+integration-test:
+  stage: test
+  image: python:3.12-slim
+  extends: .vault-oidc-auth
+  variables:
+    VAULT_ROLE: "REPLACE_VAULT_ROLE_TEST"           # Role scoped to test secrets
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - set -euo pipefail
+
+    # Each stage gets its OWN short-lived Vault token via OIDC.
+    # Tokens from the build stage are already revoked.
+
+    # Fetch test database credentials (dynamic secrets — unique per job run)
+    - |
+      echo "Requesting dynamic database credentials..."
+      DB_CREDS=$(vault read -format=json database/creds/test-readonly)
+      DB_USER=$(echo "${DB_CREDS}" | jq -r '.data.username')
+      DB_PASS=$(echo "${DB_CREDS}" | jq -r '.data.password')
+      DB_LEASE=$(echo "${DB_CREDS}" | jq -r '.lease_id')
+      echo "Dynamic DB user: ${DB_USER} (lease: ${DB_LEASE})"
+
+      # Mask the password in job logs — GitLab will redact it
+      echo "::add-mask::${DB_PASS}"
+
+    # Export for test framework
+    - |
+      export DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@REPLACE_DB_HOST:5432/testdb"
+
+    # Run integration tests
+    - |
+      pip install -q -r requirements-test.txt
+      pytest tests/integration/ -v --tb=short
+
+    # Revoke the dynamic DB lease immediately after tests
+    - |
+      echo "Revoking dynamic DB credentials..."
+      vault lease revoke "${DB_LEASE}" 2>/dev/null || true
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# ---------------------------------------------------------------------------
+# Stage: Deploy — SOPS decrypt + Kubernetes deployment
+# ---------------------------------------------------------------------------
+deploy-staging:
+  stage: deploy
+  image: alpine:3.19
+  extends: .vault-oidc-auth
+  variables:
+    VAULT_ROLE: "REPLACE_VAULT_ROLE_DEPLOY"         # Role scoped to deploy secrets + transit
+    DEPLOY_ENV: "staging"
+    K8S_NAMESPACE: "REPLACE_K8S_NAMESPACE"
+    K8S_CLUSTER_NAME: "REPLACE_K8S_CLUSTER_NAME"
+  needs:
+    - job: build
+      artifacts: true
+    - job: integration-test
+      artifacts: false
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - set -euo pipefail
+
+    # Install tools
+    - |
+      apk add --no-cache curl jq kubectl
+      # Install SOPS
+      curl -fsSL -o /usr/local/bin/sops \
+        "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+      chmod +x /usr/local/bin/sops
+
+    # --- SOPS Decryption using Vault Transit --------------------------------
+    # SOPS can use Vault's Transit engine as its encryption backend.
+    # The Vault token (from OIDC auth) authorizes Transit decrypt operations.
+    # This means SOPS keys are managed in Vault — no cloud KMS dependency.
+    - |
+      export VAULT_ADDR="${VAULT_ADDR}"
+      # VAULT_TOKEN is already exported by .vault-oidc-auth
+
+      DECRYPT_DIR=$(mktemp -d)
+      SOPS_DIR="secrets/${DEPLOY_ENV}"
+      FILE_COUNT=0
+
+      if [[ ! -d "${SOPS_DIR}" ]]; then
+        echo "ERROR: Secret directory not found: ${SOPS_DIR}"
+        exit 1
+      fi
+
+      for file in "${SOPS_DIR}"/*.yaml "${SOPS_DIR}"/*.yml; do
+        [[ ! -f "${file}" ]] && continue
+        BASENAME=$(basename "${file}")
+        echo "Decrypting: ${file}"
+        sops --decrypt "${file}" > "${DECRYPT_DIR}/${BASENAME}"
+        FILE_COUNT=$((FILE_COUNT + 1))
+      done
+
+      if [[ "${FILE_COUNT}" -eq 0 ]]; then
+        echo "ERROR: No SOPS files found in ${SOPS_DIR}"
+        exit 1
+      fi
+      echo "Decrypted ${FILE_COUNT} file(s)."
+
+    # --- Validate decrypted config ------------------------------------------
+    - |
+      for file in "${DECRYPT_DIR}"/*; do
+        [[ ! -f "${file}" ]] && continue
+        # Ensure no SOPS metadata remains (partial decryption detection)
+        if grep -q 'sops_version' "${file}" 2>/dev/null; then
+          echo "ERROR: SOPS metadata still present in $(basename "${file}")"
+          exit 1
+        fi
+      done
+
+    # --- Configure kubectl --------------------------------------------------
+    - |
+      echo "Fetching kubeconfig from Vault..."
+      KUBECONFIG_DATA=$(vault kv get -field=kubeconfig \
+        "kv/data/infrastructure/${K8S_CLUSTER_NAME}/kubeconfig")
+      echo "${KUBECONFIG_DATA}" > /tmp/kubeconfig
+      export KUBECONFIG=/tmp/kubeconfig
+      kubectl cluster-info
+
+    # --- Create/update Kubernetes secrets from decrypted files ---------------
+    - |
+      SECRET_ARGS=""
+      for file in "${DECRYPT_DIR}"/*; do
+        [[ ! -f "${file}" ]] && continue
+        BASENAME=$(basename "${file}")
+        SECRET_ARGS="${SECRET_ARGS} --from-file=${BASENAME}=${file}"
+      done
+
+      kubectl create secret generic app-secrets \
+        --namespace="${K8S_NAMESPACE}" \
+        ${SECRET_ARGS} \
+        --dry-run=client -o yaml | kubectl apply -f -
+      echo "Kubernetes secret 'app-secrets' applied."
+
+    # --- Roll out the deployment --------------------------------------------
+    - |
+      FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+      kubectl set image deployment/app \
+        --namespace="${K8S_NAMESPACE}" \
+        "app=${FULL_IMAGE}"
+      kubectl rollout status deployment/app \
+        --namespace="${K8S_NAMESPACE}" \
+        --timeout=300s
+      echo "Deployment rolled out: ${FULL_IMAGE}"
+
+    # --- Cleanup decrypted files and kubeconfig -----------------------------
+    - |
+      rm -rf "${DECRYPT_DIR}" /tmp/kubeconfig
+      echo "Decrypted files cleaned up."
+
+  after_script:
+    # Ensure cleanup even on failure
+    - rm -rf /tmp/tmp.* /tmp/kubeconfig 2>/dev/null || true
+    - |
+      if [[ -n "${VAULT_TOKEN:-}" ]]; then
+        vault token revoke -self 2>/dev/null || true
+      fi
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+
+# ---------------------------------------------------------------------------
+# Production deploy — identical pattern, different role/environment
+# ---------------------------------------------------------------------------
+deploy-production:
+  extends: deploy-staging
+  variables:
+    VAULT_ROLE: "REPLACE_VAULT_ROLE_DEPLOY_PROD"
+    DEPLOY_ENV: "production"
+    K8S_NAMESPACE: "REPLACE_K8S_NAMESPACE_PROD"
+  environment:
+    name: production
+    url: https://app.example.com
+  needs:
+    - job: build
+      artifacts: true
+    - job: integration-test
+      artifacts: false
+    - job: deploy-staging
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false

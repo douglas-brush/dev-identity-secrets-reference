@@ -55,8 +55,6 @@ DB_ROLE=false
 CERT=false
 APPLY=false
 OUTPUT_DIR=""
-DRY_RUN=false
-
 # Parse args
 [[ $# -lt 2 ]] && usage
 APP_NAME="$1"; shift
@@ -71,7 +69,7 @@ while [[ $# -gt 0 ]]; do
     --cert) CERT=true; shift ;;
     --apply) APPLY=true; shift ;;
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-    --dry-run) DRY_RUN=true; shift ;;
+    --dry-run) shift ;;  # Alias for default behavior (manifests only, no apply)
     -h|--help) usage ;;
     *) die "Unknown option: $1" ;;
   esac

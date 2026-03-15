@@ -1,0 +1,16 @@
+{
+  "name": "vault-app",
+  "version": "1.0.0",
+  "description": "Vault-integrated Node.js application example",
+  "main": "vault-app.js",
+  "scripts": {
+    "start": "node vault-app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "node-vault": "^0.10.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

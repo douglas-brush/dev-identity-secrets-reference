@@ -40,9 +40,9 @@ err()  { printf "${RED}[x]${NC} %s\n" "$*" >&2; }
 
 section() {
   echo ""
-  printf "${BLUE}═══════════════════════════════════════════════════${NC}\n"
-  printf "${BLUE} %s${NC}\n" "$*"
-  printf "${BLUE}═══════════════════════════════════════════════════${NC}\n"
+  printf '%b═══════════════════════════════════════════════════%b\n' "${BLUE}" "${NC}"
+  printf '%b %s%b\n' "${BLUE}" "$*" "${NC}"
+  printf '%b═══════════════════════════════════════════════════%b\n' "${BLUE}" "${NC}"
 }
 
 ###############################################################################
@@ -228,7 +228,7 @@ configure_github_jwt() {
     role_type="jwt" \
     bound_audiences="https://github.com/${GITHUB_ORG}" \
     bound_claims_type="glob" \
-    bound_claims='{"repository": "'${GITHUB_ORG}'/*", "ref": "refs/heads/main"}' \
+    bound_claims="{\"repository\": \"${GITHUB_ORG}/*\", \"ref\": \"refs/heads/main\"}" \
     user_claim="repository" \
     policies="ci-issuer" \
     ttl=15m \

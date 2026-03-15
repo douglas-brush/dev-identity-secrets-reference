@@ -1,0 +1,433 @@
+# CircleCI configuration: Build -> Test -> Deploy with Vault OIDC
+#
+# Demonstrates:
+#   - OIDC-based Vault authentication using CircleCI OIDC tokens
+#   - Orb-style reusable commands for Vault operations
+#   - Per-job short-lived Vault tokens
+#   - Secret scanning with gitleaks
+#   - SOPS decryption for deployments
+#
+# CircleCI OIDC:
+#   CircleCI provides an OIDC token via the $CIRCLE_OIDC_TOKEN_V2 environment
+#   variable. This token contains claims about the project, job, and pipeline.
+#   Vault validates the token against CircleCI's OIDC discovery endpoint.
+#
+# Vault JWT auth setup for CircleCI:
+#   vault write auth/jwt/circleci/config \
+#     oidc_discovery_url="https://oidc.circleci.com/org/REPLACE_ORG_ID" \
+#     bound_issuer="https://oidc.circleci.com/org/REPLACE_ORG_ID"
+#
+#   vault write auth/jwt/circleci/role/circleci-myproject \
+#     role_type="jwt" \
+#     bound_audiences="REPLACE_ORG_ID" \
+#     bound_claims_type="glob" \
+#     bound_claims='{"oidc.circleci.com/project-id":"REPLACE_PROJECT_ID"}' \
+#     user_claim="sub" \
+#     policies="ci-issuer" \
+#     token_ttl="600" \
+#     token_max_ttl="900"
+#
+# Adjust REPLACE_ placeholders before use.
+
+version: 2.1
+
+# ---------------------------------------------------------------------------
+# Orb-style reusable commands — Vault operations
+# ---------------------------------------------------------------------------
+# These commands encapsulate common Vault patterns. In production, you would
+# publish these as a private CircleCI orb. Inline here for portability.
+
+commands:
+  # ── Install Vault CLI ─────────────────────────────────────────────────────
+  install-vault:
+    description: "Install HashiCorp Vault CLI"
+    parameters:
+      version:
+        type: string
+        default: "1.17.0"
+    steps:
+      - run:
+          name: Install Vault CLI
+          command: |
+            set -euo pipefail
+            if command -v vault &>/dev/null; then
+              echo "Vault CLI already installed: $(vault version)"
+              exit 0
+            fi
+            VAULT_VERSION="<< parameters.version >>"
+            curl -fsSL -o /tmp/vault.zip \
+              "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+            unzip -qo /tmp/vault.zip -d /tmp/
+            sudo mv /tmp/vault /usr/local/bin/vault
+            chmod +x /usr/local/bin/vault
+            rm -f /tmp/vault.zip
+            vault version
+
+  # ── Authenticate to Vault via OIDC ────────────────────────────────────────
+  vault-oidc-auth:
+    description: "Authenticate to Vault using CircleCI OIDC token"
+    parameters:
+      vault_addr:
+        type: string
+        description: "Vault server URL"
+      vault_role:
+        type: string
+        description: "Vault JWT auth role"
+      vault_auth_path:
+        type: string
+        default: "jwt/circleci"
+        description: "JWT auth mount path"
+    steps:
+      - run:
+          name: Authenticate to Vault (OIDC)
+          command: |
+            set -euo pipefail
+
+            # CircleCI provides the OIDC token automatically for projects
+            # that have a CircleCI context with OIDC enabled.
+            if [[ -z "${CIRCLE_OIDC_TOKEN_V2:-}" ]]; then
+              echo "ERROR: CIRCLE_OIDC_TOKEN_V2 is not set."
+              echo "Ensure this job uses a context with OIDC enabled."
+              echo "See: https://circleci.com/docs/openid-connect-tokens/"
+              exit 1
+            fi
+
+            VAULT_ADDR="<< parameters.vault_addr >>"
+            VAULT_ROLE="<< parameters.vault_role >>"
+            VAULT_AUTH_PATH="<< parameters.vault_auth_path >>"
+
+            echo "Authenticating to Vault at ${VAULT_ADDR} (role: ${VAULT_ROLE})..."
+            VAULT_RESPONSE=$(vault write -format=json \
+              "auth/${VAULT_AUTH_PATH}/login" \
+              role="${VAULT_ROLE}" \
+              jwt="${CIRCLE_OIDC_TOKEN_V2}" \
+            ) || {
+              echo "ERROR: Vault OIDC authentication failed."
+              echo "Verify:"
+              echo "  - bound_audiences matches your CircleCI org ID"
+              echo "  - bound_claims match project-id / branch"
+              echo "  - OIDC discovery URL is correct for your org"
+              exit 1
+            }
+
+            VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r '.auth.client_token')
+            if [[ -z "${VAULT_TOKEN}" || "${VAULT_TOKEN}" == "null" ]]; then
+              echo "ERROR: Failed to extract Vault token."
+              exit 1
+            fi
+
+            # Persist for subsequent steps in this job.
+            # CircleCI masks env vars set via BASH_ENV.
+            echo "export VAULT_TOKEN='${VAULT_TOKEN}'" >> "${BASH_ENV}"
+            echo "export VAULT_ADDR='${VAULT_ADDR}'" >> "${BASH_ENV}"
+
+            # Validate
+            export VAULT_ADDR VAULT_TOKEN
+            TOKEN_INFO=$(vault token lookup -format=json)
+            TTL=$(echo "${TOKEN_INFO}" | jq -r '.data.ttl')
+            POLICIES=$(echo "${TOKEN_INFO}" | jq -r '.data.policies | join(", ")')
+            echo "Vault token acquired — TTL: ${TTL}s, policies: ${POLICIES}"
+
+  # ── Read secrets from Vault ───────────────────────────────────────────────
+  vault-read-secrets:
+    description: "Read secrets from Vault and export as environment variables"
+    parameters:
+      secret_paths:
+        type: string
+        description: "Space-separated Vault KV paths"
+      output_file:
+        type: string
+        default: "/tmp/vault-secrets.env"
+        description: "Output file for secrets (sourced by subsequent steps)"
+    steps:
+      - run:
+          name: Fetch secrets from Vault
+          command: |
+            set -euo pipefail
+            OUTPUT="<< parameters.output_file >>"
+            > "${OUTPUT}"
+
+            for SECRET_PATH in << parameters.secret_paths >>; do
+              echo "Reading: ${SECRET_PATH}"
+              vault kv get -format=json "${SECRET_PATH}" \
+                | jq -r '.data.data | to_entries[] | "export \(.key)=\u0027\(.value)\u0027"' \
+                >> "${OUTPUT}"
+            done
+
+            LINES=$(wc -l < "${OUTPUT}")
+            echo "Exported ${LINES} secret(s) to ${OUTPUT}"
+
+            # Source into BASH_ENV so subsequent steps have them
+            cat "${OUTPUT}" >> "${BASH_ENV}"
+
+  # ── Revoke Vault token ───────────────────────────────────────────────────
+  vault-revoke:
+    description: "Revoke the current Vault token"
+    steps:
+      - run:
+          name: Revoke Vault token
+          when: always
+          command: |
+            if [[ -n "${VAULT_TOKEN:-}" ]]; then
+              vault token revoke -self 2>/dev/null || true
+              echo "Vault token revoked."
+            fi
+            rm -f /tmp/vault-secrets.env 2>/dev/null || true
+
+  # ── Install SOPS ─────────────────────────────────────────────────────────
+  install-sops:
+    description: "Install Mozilla SOPS"
+    parameters:
+      version:
+        type: string
+        default: "3.9.0"
+    steps:
+      - run:
+          name: Install SOPS
+          command: |
+            set -euo pipefail
+            SOPS_VERSION="<< parameters.version >>"
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+            chmod +x /usr/local/bin/sops
+            sops --version
+
+# ---------------------------------------------------------------------------
+# Job definitions
+# ---------------------------------------------------------------------------
+jobs:
+  # ── Secret scan ──────────────────────────────────────────────────────────
+  secret-scan:
+    docker:
+      - image: zricethezav/gitleaks:latest
+    steps:
+      - checkout
+      - run:
+          name: Run gitleaks
+          command: |
+            gitleaks detect \
+              --source="." \
+              --report-path="/tmp/gitleaks-report.json" \
+              --report-format=json \
+              --exit-code=1 \
+              --verbose
+            echo "No secrets detected."
+      - store_artifacts:
+          path: /tmp/gitleaks-report.json
+          destination: gitleaks-report.json
+
+  # ── Build ────────────────────────────────────────────────────────────────
+  build:
+    docker:
+      - image: cimg/base:2024.01
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: "24.0"
+
+      - install-vault
+      - vault-oidc-auth:
+          vault_addr: "REPLACE_VAULT_ADDR"
+          vault_role: "REPLACE_VAULT_ROLE_BUILD"
+
+      # Fetch build-time secrets
+      - run:
+          name: Fetch build secrets
+          command: |
+            set -euo pipefail
+            REGISTRY_TOKEN=$(vault kv get -field=registry_token \
+              kv/data/ci/build-config 2>/dev/null || echo "")
+            if [[ -n "${REGISTRY_TOKEN}" ]]; then
+              echo "export REGISTRY_TOKEN='${REGISTRY_TOKEN}'" >> "${BASH_ENV}"
+            fi
+
+      # Build and push image
+      - run:
+          name: Build & push container image
+          command: |
+            set -euo pipefail
+            SHORT_SHA=$(echo "${CIRCLE_SHA1}" | cut -c1-8)
+            IMAGE_TAG="${CIRCLE_BRANCH}-${SHORT_SHA}"
+            FULL_IMAGE="REPLACE_REGISTRY/REPLACE_IMAGE:${IMAGE_TAG}"
+
+            docker build \
+              --label "org.opencontainers.image.revision=${CIRCLE_SHA1}" \
+              -t "${FULL_IMAGE}" .
+            docker push "${FULL_IMAGE}"
+
+            # Persist image tag for downstream jobs
+            echo "${IMAGE_TAG}" > /tmp/image-tag.txt
+
+      - persist_to_workspace:
+          root: /tmp
+          paths:
+            - image-tag.txt
+
+      - vault-revoke
+
+  # ── Integration tests ───────────────────────────────────────────────────
+  integration-test:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+
+      - install-vault
+      - vault-oidc-auth:
+          vault_addr: "REPLACE_VAULT_ADDR"
+          vault_role: "REPLACE_VAULT_ROLE_TEST"
+
+      # Dynamic database credentials — unique per job run
+      - run:
+          name: Provision dynamic DB credentials
+          command: |
+            set -euo pipefail
+            DB_CREDS=$(vault read -format=json database/creds/test-readonly)
+            DB_USER=$(echo "${DB_CREDS}" | jq -r '.data.username')
+            DB_PASS=$(echo "${DB_CREDS}" | jq -r '.data.password')
+            DB_LEASE=$(echo "${DB_CREDS}" | jq -r '.lease_id')
+
+            echo "export DATABASE_URL='postgresql://${DB_USER}:${DB_PASS}@REPLACE_DB_HOST:5432/testdb'" >> "${BASH_ENV}"
+            echo "export DB_LEASE='${DB_LEASE}'" >> "${BASH_ENV}"
+            echo "Dynamic DB user: ${DB_USER} (lease: ${DB_LEASE})"
+
+      - run:
+          name: Run integration tests
+          command: |
+            pip install -q -r requirements-test.txt
+            pytest tests/integration/ -v --tb=short
+
+      # Revoke dynamic credentials, then Vault token
+      - run:
+          name: Revoke dynamic credentials
+          when: always
+          command: |
+            if [[ -n "${DB_LEASE:-}" ]]; then
+              vault lease revoke "${DB_LEASE}" 2>/dev/null || true
+              echo "Dynamic DB credentials revoked."
+            fi
+
+      - vault-revoke
+
+  # ── Deploy ──────────────────────────────────────────────────────────────
+  deploy-staging:
+    docker:
+      - image: cimg/base:2024.01
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp
+
+      - install-vault
+      - install-sops
+      - vault-oidc-auth:
+          vault_addr: "REPLACE_VAULT_ADDR"
+          vault_role: "REPLACE_VAULT_ROLE_DEPLOY"
+
+      # SOPS decryption using Vault Transit as KMS
+      - run:
+          name: Decrypt SOPS secrets
+          command: |
+            set -euo pipefail
+            DECRYPT_DIR=$(mktemp -d)
+            echo "export DECRYPT_DIR='${DECRYPT_DIR}'" >> "${BASH_ENV}"
+            SOPS_DIR="secrets/staging"
+            FILE_COUNT=0
+
+            for file in "${SOPS_DIR}"/*.yaml "${SOPS_DIR}"/*.yml; do
+              [[ ! -f "${file}" ]] && continue
+              BASENAME=$(basename "${file}")
+              echo "Decrypting: ${file}"
+              sops --decrypt "${file}" > "${DECRYPT_DIR}/${BASENAME}"
+              FILE_COUNT=$((FILE_COUNT + 1))
+            done
+
+            if [[ "${FILE_COUNT}" -eq 0 ]]; then
+              echo "ERROR: No SOPS files found in ${SOPS_DIR}"
+              exit 1
+            fi
+            echo "Decrypted ${FILE_COUNT} file(s)."
+
+      # Fetch kubeconfig and deploy
+      - run:
+          name: Deploy to Kubernetes
+          command: |
+            set -euo pipefail
+
+            # Install kubectl
+            curl -fsSL -o /usr/local/bin/kubectl \
+              "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x /usr/local/bin/kubectl
+
+            # Fetch kubeconfig from Vault
+            vault kv get -field=kubeconfig \
+              "kv/data/infrastructure/REPLACE_CLUSTER/kubeconfig" > /tmp/kubeconfig
+            export KUBECONFIG=/tmp/kubeconfig
+
+            K8S_NAMESPACE="REPLACE_K8S_NAMESPACE"
+            IMAGE_TAG=$(cat /tmp/image-tag.txt)
+            FULL_IMAGE="REPLACE_REGISTRY/REPLACE_IMAGE:${IMAGE_TAG}"
+
+            # Create Kubernetes secrets from decrypted files
+            SECRET_ARGS=""
+            for file in "${DECRYPT_DIR}"/*; do
+              [[ ! -f "${file}" ]] && continue
+              BASENAME=$(basename "${file}")
+              SECRET_ARGS="${SECRET_ARGS} --from-file=${BASENAME}=${file}"
+            done
+
+            kubectl create secret generic app-secrets \
+              --namespace="${K8S_NAMESPACE}" \
+              ${SECRET_ARGS} \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+            # Roll out
+            kubectl set image deployment/app \
+              --namespace="${K8S_NAMESPACE}" \
+              "app=${FULL_IMAGE}"
+            kubectl rollout status deployment/app \
+              --namespace="${K8S_NAMESPACE}" \
+              --timeout=300s
+            echo "Deployment complete: ${FULL_IMAGE}"
+
+      # Cleanup
+      - run:
+          name: Cleanup
+          when: always
+          command: |
+            rm -rf "${DECRYPT_DIR:-/dev/null}" /tmp/kubeconfig 2>/dev/null || true
+      - vault-revoke
+
+# ---------------------------------------------------------------------------
+# Workflows
+# ---------------------------------------------------------------------------
+workflows:
+  build-test-deploy:
+    jobs:
+      - secret-scan
+
+      - build:
+          context:
+            - vault-oidc                             # CircleCI context with OIDC enabled
+          requires:
+            - secret-scan
+          filters:
+            branches:
+              only:
+                - main
+                - /^feature\/.*/
+
+      - integration-test:
+          context:
+            - vault-oidc
+          requires:
+            - build
+
+      - deploy-staging:
+          context:
+            - vault-oidc
+          requires:
+            - integration-test
+          filters:
+            branches:
+              only: main

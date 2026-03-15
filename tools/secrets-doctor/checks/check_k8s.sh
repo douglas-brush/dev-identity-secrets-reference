@@ -58,7 +58,7 @@ check_k8s() {
     # Check each secret for management labels/annotations
     local unmanaged_in_ns=0
     for ((i = 0; i < ns_secret_count; i++)); do
-      local secret_name secret_type labels annotations
+      local secret_name secret_type
       secret_name=$(echo "$secrets_json" | jq -r ".items[${i}].metadata.name" 2>/dev/null)
       secret_type=$(echo "$secrets_json" | jq -r ".items[${i}].type" 2>/dev/null)
 

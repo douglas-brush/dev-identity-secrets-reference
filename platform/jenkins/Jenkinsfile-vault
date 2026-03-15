@@ -1,0 +1,341 @@
+// Jenkins Declarative Pipeline: Build -> Test -> Deploy with Vault integration
+//
+// Authentication strategy:
+//   1. OIDC (preferred) — if Jenkins OIDC plugin is installed, uses JWT federation
+//   2. AppRole (fallback) — for Jenkins instances without OIDC support
+//
+// Demonstrates:
+//   - Per-stage Vault authentication with short-lived tokens
+//   - Dynamic database credentials for tests
+//   - SOPS decryption in the deploy stage
+//   - Credential masking via Jenkins' credentials binding
+//   - Proper cleanup and token revocation
+//
+// Prerequisites:
+//   - HashiCorp Vault Plugin for Jenkins (recommended) OR direct API calls
+//   - For OIDC: Jenkins OIDC Provider plugin + Vault JWT auth backend
+//   - For AppRole: Vault AppRole auth with secret_id rotation
+//   - SOPS binary available or installed during pipeline
+//
+// Adjust REPLACE_ placeholders before use.
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        timestamps()
+        // Mask any secret values that leak to console output
+        ansiColor('xterm')
+    }
+
+    environment {
+        VAULT_ADDR          = 'REPLACE_VAULT_ADDR'             // https://vault.example.com
+        VAULT_AUTH_PATH     = 'jwt/jenkins'                     // JWT auth mount for Jenkins OIDC
+        VAULT_APPROLE_PATH  = 'auth/approle'                    // Fallback AppRole mount
+        VAULT_NAMESPACE     = ''                                 // Enterprise namespace (empty for OSS)
+        SOPS_VERSION        = '3.9.0'
+        DEPLOY_ENV          = 'staging'
+        K8S_NAMESPACE       = 'REPLACE_K8S_NAMESPACE'
+        IMAGE_NAME          = 'REPLACE_IMAGE_NAME'
+        REGISTRY            = 'REPLACE_REGISTRY'
+    }
+
+    stages {
+        // ── Stage: Secret Scan ──────────────────────────────────────────────
+        stage('Secret Scan') {
+            steps {
+                script {
+                    echo "Running gitleaks secret scan..."
+                    sh '''
+                        set -euo pipefail
+                        if ! command -v gitleaks &>/dev/null; then
+                            GITLEAKS_VERSION="8.18.0"
+                            curl -fsSL -o /tmp/gitleaks.tar.gz \
+                                "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+                            tar -xzf /tmp/gitleaks.tar.gz -C /tmp/
+                            chmod +x /tmp/gitleaks
+                            export PATH="/tmp:${PATH}"
+                        fi
+                        gitleaks detect \
+                            --source="${WORKSPACE}" \
+                            --report-path="${WORKSPACE}/gitleaks-report.json" \
+                            --report-format=json \
+                            --exit-code=1 \
+                            --verbose
+                        echo "No secrets detected."
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'gitleaks-report.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ── Stage: Build ────────────────────────────────────────────────────
+        stage('Build') {
+            steps {
+                script {
+                    // Authenticate to Vault for build-time secrets
+                    def vaultToken = vaultAuth()
+
+                    withEnv(["VAULT_TOKEN=${vaultToken}"]) {
+                        sh '''
+                            set -euo pipefail
+
+                            # Fetch build secrets (e.g. private registry token)
+                            REGISTRY_TOKEN=$(vault kv get -field=registry_token \
+                                kv/data/ci/build-config 2>/dev/null || echo "")
+
+                            # Build
+                            SHORT_SHA=$(echo "${GIT_COMMIT}" | cut -c1-8)
+                            IMAGE_TAG="${BRANCH_NAME}-${SHORT_SHA}"
+                            FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+                            docker build \
+                                --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+                                -t "${FULL_IMAGE}" .
+                            docker push "${FULL_IMAGE}"
+
+                            echo "${IMAGE_TAG}" > image-tag.txt
+                        '''
+
+                        // Revoke token immediately — build stage is done
+                        sh "vault token revoke -self 2>/dev/null || true"
+                    }
+
+                    // Stash the image tag for downstream stages
+                    stash includes: 'image-tag.txt', name: 'image-tag'
+                }
+            }
+        }
+
+        // ── Stage: Integration Tests ────────────────────────────────────────
+        stage('Integration Test') {
+            steps {
+                script {
+                    def vaultToken = vaultAuth()
+
+                    withEnv(["VAULT_TOKEN=${vaultToken}"]) {
+                        sh '''
+                            set -euo pipefail
+
+                            # Request dynamic database credentials — unique per build
+                            # These are auto-revoked by Vault after TTL expiry
+                            DB_CREDS=$(vault read -format=json database/creds/test-readonly)
+                            DB_USER=$(echo "${DB_CREDS}" | jq -r '.data.username')
+                            DB_PASS=$(echo "${DB_CREDS}" | jq -r '.data.password')
+                            DB_LEASE=$(echo "${DB_CREDS}" | jq -r '.lease_id')
+
+                            echo "Dynamic DB user: ${DB_USER} (lease: ${DB_LEASE})"
+
+                            # Run tests with dynamic credentials
+                            export DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@REPLACE_DB_HOST:5432/testdb"
+                            pip install -q -r requirements-test.txt
+                            pytest tests/integration/ -v --tb=short
+
+                            # Revoke dynamic credentials immediately after tests
+                            vault lease revoke "${DB_LEASE}" 2>/dev/null || true
+                            echo "Dynamic DB credentials revoked."
+                        '''
+
+                        sh "vault token revoke -self 2>/dev/null || true"
+                    }
+                }
+            }
+        }
+
+        // ── Stage: Deploy ───────────────────────────────────────────────────
+        stage('Deploy') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    unstash 'image-tag'
+                    def imageTag = readFile('image-tag.txt').trim()
+                    def vaultToken = vaultAuth()
+
+                    withEnv(["VAULT_TOKEN=${vaultToken}", "IMAGE_TAG=${imageTag}"]) {
+                        sh '''
+                            set -euo pipefail
+
+                            # Install SOPS if not present
+                            if ! command -v sops &>/dev/null; then
+                                curl -fsSL -o /usr/local/bin/sops \
+                                    "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+                                chmod +x /usr/local/bin/sops
+                            fi
+
+                            # --- SOPS Decryption ─────────────────────────────
+                            # SOPS uses Vault Transit as its KMS backend.
+                            # The VAULT_TOKEN authorizes transit:decrypt operations.
+                            DECRYPT_DIR=$(mktemp -d)
+                            SOPS_DIR="secrets/${DEPLOY_ENV}"
+                            FILE_COUNT=0
+
+                            for file in "${SOPS_DIR}"/*.yaml "${SOPS_DIR}"/*.yml; do
+                                [ ! -f "${file}" ] && continue
+                                BASENAME=$(basename "${file}")
+                                echo "Decrypting: ${file}"
+                                sops --decrypt "${file}" > "${DECRYPT_DIR}/${BASENAME}"
+                                FILE_COUNT=$((FILE_COUNT + 1))
+                            done
+
+                            if [ "${FILE_COUNT}" -eq 0 ]; then
+                                echo "ERROR: No SOPS files found in ${SOPS_DIR}"
+                                exit 1
+                            fi
+                            echo "Decrypted ${FILE_COUNT} file(s)."
+
+                            # --- Fetch kubeconfig from Vault ─────────────────
+                            KUBECONFIG_DATA=$(vault kv get -field=kubeconfig \
+                                "kv/data/infrastructure/REPLACE_CLUSTER/kubeconfig")
+                            echo "${KUBECONFIG_DATA}" > /tmp/kubeconfig
+                            export KUBECONFIG=/tmp/kubeconfig
+
+                            # --- Create Kubernetes secrets ───────────────────
+                            SECRET_ARGS=""
+                            for file in "${DECRYPT_DIR}"/*; do
+                                [ ! -f "${file}" ] && continue
+                                BASENAME=$(basename "${file}")
+                                SECRET_ARGS="${SECRET_ARGS} --from-file=${BASENAME}=${file}"
+                            done
+
+                            kubectl create secret generic app-secrets \
+                                --namespace="${K8S_NAMESPACE}" \
+                                ${SECRET_ARGS} \
+                                --dry-run=client -o yaml | kubectl apply -f -
+
+                            # --- Roll out ────────────────────────────────────
+                            FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                            kubectl set image deployment/app \
+                                --namespace="${K8S_NAMESPACE}" \
+                                "app=${FULL_IMAGE}"
+                            kubectl rollout status deployment/app \
+                                --namespace="${K8S_NAMESPACE}" \
+                                --timeout=300s
+                            echo "Deployment complete: ${FULL_IMAGE}"
+
+                            # --- Cleanup ─────────────────────────────────────
+                            rm -rf "${DECRYPT_DIR}" /tmp/kubeconfig
+                        '''
+
+                        sh "vault token revoke -self 2>/dev/null || true"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Ensure no Vault tokens or decrypted files persist on the agent
+            sh '''
+                rm -f /tmp/kubeconfig 2>/dev/null || true
+                rm -rf /tmp/tmp.* 2>/dev/null || true
+                if [ -n "${VAULT_TOKEN:-}" ]; then
+                    vault token revoke -self 2>/dev/null || true
+                fi
+            '''
+            cleanWs()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Authenticate to Vault — OIDC first, AppRole fallback
+// ---------------------------------------------------------------------------
+def vaultAuth() {
+    def token = null
+
+    // Strategy 1: OIDC (if Jenkins OIDC provider plugin is available)
+    // Jenkins signs a JWT with claims about this build (job name, build number,
+    // branch, etc.). Vault validates the signature against Jenkins' JWKS.
+    try {
+        echo "Attempting OIDC authentication..."
+        def jwtToken = sh(
+            script: '''
+                set -euo pipefail
+                # Jenkins OIDC plugin exposes JWT via the OIDC_TOKEN_FILE environment variable
+                # or via the Jenkins credentials provider
+                if [ -f "${OIDC_TOKEN_FILE:-/dev/null}" ]; then
+                    cat "${OIDC_TOKEN_FILE}"
+                elif [ -n "${JENKINS_OIDC_TOKEN:-}" ]; then
+                    echo "${JENKINS_OIDC_TOKEN}"
+                else
+                    exit 1
+                fi
+            ''',
+            returnStdout: true
+        ).trim()
+
+        if (jwtToken) {
+            def response = sh(
+                script: """
+                    set -euo pipefail
+                    vault write -format=json \
+                        "auth/${VAULT_AUTH_PATH}/login" \
+                        role="REPLACE_VAULT_ROLE" \
+                        jwt="${jwtToken}"
+                """,
+                returnStdout: true
+            ).trim()
+
+            token = sh(
+                script: "echo '${response}' | jq -r '.auth.client_token'",
+                returnStdout: true
+            ).trim()
+            echo "Vault OIDC authentication successful."
+        }
+    } catch (Exception e) {
+        echo "OIDC not available, falling back to AppRole..."
+    }
+
+    // Strategy 2: AppRole fallback
+    // Uses a role_id (non-sensitive) and a secret_id (short-lived, rotated).
+    // The secret_id is stored as a Jenkins credential and rotated regularly.
+    if (!token) {
+        withCredentials([
+            string(credentialsId: 'vault-approle-role-id', variable: 'VAULT_ROLE_ID'),
+            string(credentialsId: 'vault-approle-secret-id', variable: 'VAULT_SECRET_ID')
+        ]) {
+            def response = sh(
+                script: '''
+                    set -euo pipefail
+                    vault write -format=json \
+                        "${VAULT_APPROLE_PATH}/login" \
+                        role_id="${VAULT_ROLE_ID}" \
+                        secret_id="${VAULT_SECRET_ID}"
+                ''',
+                returnStdout: true
+            ).trim()
+
+            token = sh(
+                script: "echo '${response}' | jq -r '.auth.client_token'",
+                returnStdout: true
+            ).trim()
+            echo "Vault AppRole authentication successful."
+        }
+    }
+
+    if (!token || token == 'null') {
+        error("Failed to authenticate to Vault via OIDC or AppRole.")
+    }
+
+    // Validate the token
+    withEnv(["VAULT_TOKEN=${token}"]) {
+        sh '''
+            set -euo pipefail
+            TOKEN_INFO=$(vault token lookup -format=json)
+            TTL=$(echo "${TOKEN_INFO}" | jq -r '.data.ttl')
+            POLICIES=$(echo "${TOKEN_INFO}" | jq -r '.data.policies | join(", ")')
+            echo "Vault token acquired — TTL: ${TTL}s, policies: ${POLICIES}"
+        '''
+    }
+
+    return token
+}

@@ -1,0 +1,171 @@
+# Azure DevOps reusable template: Authenticate to Vault using Azure AD OIDC.
+#
+# Azure DevOps issues a federated identity token via its OIDC service
+# connection. This token is exchanged for a short-lived Vault token.
+# Zero static secrets are stored in Azure DevOps.
+#
+# Usage:
+#   steps:
+#     - template: platform/azure-pipelines/vault-oidc-auth.yml
+#       parameters:
+#         vaultAddr: https://vault.example.com
+#         vaultRole: azure-devops-myproject
+#         azureServiceConnection: vault-oidc-connection
+#
+# Prerequisites:
+#   1. Azure DevOps OIDC service connection configured:
+#      - Service connection type: "Azure Resource Manager" with workload identity federation
+#      - OR custom service connection using AzureCLI@2 with addSpnToEnvironment
+#   2. Azure AD app registration with federated credential for Azure DevOps:
+#      - Issuer: https://vstoken.dev.azure.com/<TENANT_ID>
+#      - Subject: sc://<ORG>/<PROJECT>/<SERVICE_CONNECTION>
+#   3. Vault JWT auth backend configured for Azure AD:
+#        vault write auth/jwt/azure/config \
+#          oidc_discovery_url="https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0" \
+#          bound_issuer="https://sts.windows.net/REPLACE_TENANT_ID/"
+#   4. Vault role with bound claims:
+#        vault write auth/jwt/azure/role/azure-devops-myproject \
+#          role_type="jwt" \
+#          bound_audiences="api://REPLACE_APP_ID" \
+#          bound_claims='{"oid":"REPLACE_SERVICE_PRINCIPAL_OID"}' \
+#          user_claim="oid" \
+#          policies="ci-issuer" \
+#          token_ttl="600" \
+#          token_max_ttl="900"
+
+parameters:
+  - name: vaultAddr
+    type: string
+    displayName: "Vault server URL"
+  - name: vaultRole
+    type: string
+    displayName: "Vault JWT auth role"
+  - name: vaultAuthPath
+    type: string
+    default: "jwt/azure"
+    displayName: "Vault JWT auth mount path"
+  - name: vaultNamespace
+    type: string
+    default: ""
+    displayName: "Vault Enterprise namespace (empty for OSS)"
+  - name: azureServiceConnection
+    type: string
+    displayName: "Azure DevOps OIDC service connection name"
+  - name: vaultVersion
+    type: string
+    default: "1.17.0"
+    displayName: "Vault CLI version to install"
+
+steps:
+  # ── Step 1: Install Vault CLI ─────────────────────────────────────────────
+  - script: |
+      set -euo pipefail
+      if command -v vault &>/dev/null; then
+        echo "Vault CLI already installed: $(vault version)"
+        exit 0
+      fi
+      VAULT_VERSION="${{ parameters.vaultVersion }}"
+      echo "Installing Vault CLI v${VAULT_VERSION}..."
+      curl -fsSL -o /tmp/vault.zip \
+        "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+      unzip -qo /tmp/vault.zip -d /tmp/
+      sudo mv /tmp/vault /usr/local/bin/vault
+      chmod +x /usr/local/bin/vault
+      rm -f /tmp/vault.zip
+      vault version
+    displayName: "Install Vault CLI"
+
+  # ── Step 2: Acquire Azure AD token via OIDC service connection ────────────
+  # The AzureCLI task uses the OIDC service connection to obtain a federated
+  # token from Azure AD. With addSpnToEnvironment, the task exposes:
+  #   - $idToken        — the OIDC JWT we send to Vault
+  #   - $servicePrincipalId
+  #   - $tenantId
+  # No client secret is involved — pure OIDC federation.
+  - task: AzureCLI@2
+    displayName: "Authenticate to Vault via Azure AD OIDC"
+    inputs:
+      azureSubscription: "${{ parameters.azureServiceConnection }}"
+      scriptType: bash
+      addSpnToEnvironment: true
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        # The idToken is the Azure AD-signed JWT containing claims about this
+        # service principal. Vault validates it against Azure AD's JWKS.
+        if [[ -z "${idToken:-}" ]]; then
+          echo "##[error]No idToken available. Ensure the service connection uses workload identity federation."
+          exit 1
+        fi
+
+        VAULT_ADDR="${{ parameters.vaultAddr }}"
+        VAULT_ROLE="${{ parameters.vaultRole }}"
+        VAULT_AUTH_PATH="${{ parameters.vaultAuthPath }}"
+
+        echo "Authenticating to Vault at ${VAULT_ADDR} (role: ${VAULT_ROLE})..."
+        VAULT_RESPONSE=$(vault write -format=json \
+          "auth/${VAULT_AUTH_PATH}/login" \
+          role="${VAULT_ROLE}" \
+          jwt="${idToken}" \
+        ) || {
+          echo "##[error]Vault OIDC authentication failed."
+          echo "##[error]Verify: bound_audiences, bound_claims (oid, tid), and Vault JWKS config."
+          exit 1
+        }
+
+        VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r '.auth.client_token')
+        if [[ -z "${VAULT_TOKEN}" || "${VAULT_TOKEN}" == "null" ]]; then
+          echo "##[error]Failed to extract Vault token from auth response."
+          exit 1
+        fi
+
+        # Export as pipeline variable for subsequent steps in this job.
+        # issecret=true ensures Azure DevOps masks it in logs.
+        echo "##vso[task.setvariable variable=VAULT_TOKEN;issecret=true]${VAULT_TOKEN}"
+        echo "##vso[task.setvariable variable=VAULT_ADDR]${VAULT_ADDR}"
+
+        # Validate the token
+        export VAULT_ADDR VAULT_TOKEN
+        TOKEN_INFO=$(vault token lookup -format=json)
+        TTL=$(echo "${TOKEN_INFO}" | jq -r '.data.ttl')
+        POLICIES=$(echo "${TOKEN_INFO}" | jq -r '.data.policies | join(", ")')
+        echo "Vault token acquired — TTL: ${TTL}s, policies: ${POLICIES}"
+    env:
+      VAULT_ADDR: "${{ parameters.vaultAddr }}"
+
+  # ── Step 3: Validate Vault connectivity ───────────────────────────────────
+  - script: |
+      set -euo pipefail
+      export VAULT_ADDR="$(VAULT_ADDR)"
+      export VAULT_TOKEN="$(VAULT_TOKEN)"
+      if [[ -n "${{ parameters.vaultNamespace }}" ]]; then
+        export VAULT_NAMESPACE="${{ parameters.vaultNamespace }}"
+      fi
+      vault token lookup -format=json | jq '{ttl: .data.ttl, policies: .data.policies}'
+      echo "Vault token validated successfully."
+    displayName: "Validate Vault token"
+
+# ---------------------------------------------------------------------------
+# Reusable template: Read a secret from Vault and set as pipeline variable
+# ---------------------------------------------------------------------------
+# Usage:
+#   - template: platform/azure-pipelines/vault-oidc-auth.yml@self
+#     parameters:
+#       ...
+#   - template: platform/azure-pipelines/vault-read-secret.yml@self
+#     parameters:
+#       secretPath: kv/data/myapp/config
+#       secretKeys: "DB_HOST,DB_PORT,API_KEY"
+
+# (Inline as additional steps for simplicity — reference separately if needed)
+#
+# steps:
+#   - script: |
+#       set -euo pipefail
+#       export VAULT_ADDR="$(VAULT_ADDR)"
+#       export VAULT_TOKEN="$(VAULT_TOKEN)"
+#       SECRET_JSON=$(vault kv get -format=json "REPLACE_SECRET_PATH")
+#       DB_HOST=$(echo "${SECRET_JSON}" | jq -r '.data.data.DB_HOST')
+#       echo "##vso[task.setvariable variable=DB_HOST;issecret=true]${DB_HOST}"
+#     displayName: "Fetch secrets from Vault"

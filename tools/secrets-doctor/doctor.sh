@@ -369,8 +369,6 @@ run_plaintext_scan() {
     if [[ "$f" == *.yaml || "$f" == *.yml || "$f" == *.json ]]; then
       if ! grep -q 'sops:' "$f" 2>/dev/null && ! grep -q '"sops":' "$f" 2>/dev/null; then
         if grep -qiE '(secret|password|token|apikey|credential)' "$f" 2>/dev/null; then
-          local base
-          base="$(basename "$f")"
           # Skip files in tools/ and docs/
           if [[ "$f" != *"/tools/"* && "$f" != *"/docs/"* ]]; then
             warn "Potentially unencrypted secret file: ${f#"$REPO_ROOT"/}"

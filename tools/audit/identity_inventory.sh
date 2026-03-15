@@ -330,7 +330,7 @@ inventory_github() {
     key_count=$(echo "$deploy_keys" | jq 'length' 2>/dev/null || echo "0")
     log OK "Found ${key_count} deploy key(s)"
 
-    echo "$deploy_keys" | jq -r '.[] | "\(.id)|\(.title)|\(.read_only)"' 2>/dev/null | while IFS='|' read -r key_id title read_only; do
+    echo "$deploy_keys" | jq -r '.[] | "\(.title)|\(.read_only)"' 2>/dev/null | while IFS='|' read -r title read_only; do
       local risk="none"
       local detail="read_only=${read_only}"
       if [[ "$read_only" == "false" ]]; then

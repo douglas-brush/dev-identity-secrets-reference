@@ -1,0 +1,327 @@
+# Azure DevOps full pipeline: Build -> Test -> Deploy with Vault OIDC
+#
+# Demonstrates:
+#   - OIDC-based Vault authentication via Azure AD workload identity federation
+#   - Per-stage short-lived Vault tokens
+#   - Secret scanning with gitleaks
+#   - SOPS decryption in the deploy stage
+#   - Proper secret masking with ##vso[task.setvariable]
+#
+# Adjust REPLACE_ placeholders before use.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - "*.md"
+      - docs/
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  - name: vaultAddr
+    value: "REPLACE_VAULT_ADDR"                     # https://vault.example.com
+  - name: vaultAuthPath
+    value: "jwt/azure"
+  - name: azureServiceConnection
+    value: "REPLACE_OIDC_SERVICE_CONNECTION"         # Azure DevOps OIDC service connection
+  - name: containerRegistry
+    value: "REPLACE_ACR_NAME.azurecr.io"
+  - name: imageName
+    value: "REPLACE_IMAGE_NAME"
+  - name: sopsVersion
+    value: "3.9.0"
+
+# ---------------------------------------------------------------------------
+# Stage 1: Scan — secret leak detection
+# ---------------------------------------------------------------------------
+stages:
+  - stage: Scan
+    displayName: "Secret Scan"
+    jobs:
+      - job: SecretScan
+        displayName: "Gitleaks Secret Scan"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - checkout: self
+            fetchDepth: 0                            # Full history for accurate scanning
+
+          - script: |
+              set -euo pipefail
+              GITLEAKS_VERSION="8.18.0"
+              curl -fsSL -o /tmp/gitleaks.tar.gz \
+                "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+              tar -xzf /tmp/gitleaks.tar.gz -C /tmp/
+              chmod +x /tmp/gitleaks
+              /tmp/gitleaks detect \
+                --source="$(Build.SourcesDirectory)" \
+                --report-path="$(Build.ArtifactStagingDirectory)/gitleaks-report.json" \
+                --report-format=json \
+                --exit-code=1 \
+                --verbose
+              echo "No secrets detected in source."
+            displayName: "Run gitleaks"
+
+          - publish: "$(Build.ArtifactStagingDirectory)/gitleaks-report.json"
+            artifact: "gitleaks-report"
+            condition: always()
+            displayName: "Publish scan report"
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Build — compile, test, push container image
+  # ---------------------------------------------------------------------------
+  - stage: Build
+    displayName: "Build & Push"
+    dependsOn: Scan
+    jobs:
+      - job: BuildImage
+        displayName: "Build Container Image"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - checkout: self
+
+          # Authenticate to Vault for build-time secrets
+          - template: vault-oidc-auth.yml
+            parameters:
+              vaultAddr: $(vaultAddr)
+              vaultRole: "REPLACE_VAULT_ROLE_BUILD"
+              azureServiceConnection: $(azureServiceConnection)
+
+          # Fetch build-time secrets (e.g. private package registry token)
+          - script: |
+              set -euo pipefail
+              export VAULT_ADDR="$(VAULT_ADDR)"
+              export VAULT_TOKEN="$(VAULT_TOKEN)"
+
+              # Read build secrets — only export what is strictly needed
+              NPM_TOKEN=$(vault kv get -field=npm_token kv/data/ci/build-config 2>/dev/null || echo "")
+              if [[ -n "${NPM_TOKEN}" ]]; then
+                echo "##vso[task.setvariable variable=NPM_TOKEN;issecret=true]${NPM_TOKEN}"
+                echo "Private registry token available for build."
+              fi
+            displayName: "Fetch build secrets from Vault"
+
+          # Login to Azure Container Registry (uses Azure service connection — OIDC)
+          - task: AzureCLI@2
+            displayName: "Login to ACR"
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr login --name "REPLACE_ACR_NAME"
+
+          # Build and push
+          - script: |
+              set -euo pipefail
+              SHORT_SHA=$(echo "$(Build.SourceVersion)" | cut -c1-8)
+              IMAGE_TAG="$(Build.SourceBranchName)-${SHORT_SHA}"
+              FULL_IMAGE="$(containerRegistry)/$(imageName):${IMAGE_TAG}"
+
+              docker build \
+                --label "org.opencontainers.image.revision=$(Build.SourceVersion)" \
+                --label "org.opencontainers.image.source=$(Build.Repository.Uri)" \
+                -t "${FULL_IMAGE}" \
+                .
+              docker push "${FULL_IMAGE}"
+
+              # Export image tag for downstream stages
+              echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
+            name: buildStep
+            displayName: "Build & push container image"
+
+          # Revoke Vault token after build
+          - script: |
+              set -euo pipefail
+              export VAULT_ADDR="$(VAULT_ADDR)"
+              export VAULT_TOKEN="$(VAULT_TOKEN)"
+              vault token revoke -self 2>/dev/null || true
+              echo "Vault token revoked."
+            displayName: "Revoke Vault token"
+            condition: always()
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Test — integration tests with dynamic Vault credentials
+  # ---------------------------------------------------------------------------
+  - stage: Test
+    displayName: "Integration Tests"
+    dependsOn: Build
+    variables:
+      imageTag: $[stageDependencies.Build.BuildImage.outputs['buildStep.imageTag']]
+    jobs:
+      - job: IntegrationTest
+        displayName: "Run Integration Tests"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - checkout: self
+
+          # Fresh OIDC auth — each stage gets its own short-lived token
+          - template: vault-oidc-auth.yml
+            parameters:
+              vaultAddr: $(vaultAddr)
+              vaultRole: "REPLACE_VAULT_ROLE_TEST"
+              azureServiceConnection: $(azureServiceConnection)
+
+          # Fetch dynamic test database credentials
+          - script: |
+              set -euo pipefail
+              export VAULT_ADDR="$(VAULT_ADDR)"
+              export VAULT_TOKEN="$(VAULT_TOKEN)"
+
+              echo "Requesting dynamic database credentials..."
+              DB_CREDS=$(vault read -format=json database/creds/test-readonly)
+              DB_USER=$(echo "${DB_CREDS}" | jq -r '.data.username')
+              DB_PASS=$(echo "${DB_CREDS}" | jq -r '.data.password')
+              DB_LEASE=$(echo "${DB_CREDS}" | jq -r '.lease_id')
+
+              # Mark as secret so Azure DevOps masks them in logs
+              echo "##vso[task.setvariable variable=DB_USER;issecret=true]${DB_USER}"
+              echo "##vso[task.setvariable variable=DB_PASS;issecret=true]${DB_PASS}"
+              echo "##vso[task.setvariable variable=DB_LEASE]${DB_LEASE}"
+              echo "Dynamic DB user provisioned (lease: ${DB_LEASE})"
+            displayName: "Fetch dynamic DB credentials"
+
+          - script: |
+              set -euo pipefail
+              export DATABASE_URL="postgresql://$(DB_USER):$(DB_PASS)@REPLACE_DB_HOST:5432/testdb"
+              pip install -q -r requirements-test.txt
+              pytest tests/integration/ -v --tb=short
+            displayName: "Run integration tests"
+
+          # Revoke dynamic credentials and Vault token
+          - script: |
+              set -euo pipefail
+              export VAULT_ADDR="$(VAULT_ADDR)"
+              export VAULT_TOKEN="$(VAULT_TOKEN)"
+              if [[ -n "$(DB_LEASE)" ]]; then
+                vault lease revoke "$(DB_LEASE)" 2>/dev/null || true
+                echo "Dynamic DB credentials revoked."
+              fi
+              vault token revoke -self 2>/dev/null || true
+            displayName: "Revoke credentials"
+            condition: always()
+
+  # ---------------------------------------------------------------------------
+  # Stage 4: Deploy — SOPS decrypt + Kubernetes rollout
+  # ---------------------------------------------------------------------------
+  - stage: DeployStaging
+    displayName: "Deploy to Staging"
+    dependsOn:
+      - Build
+      - Test
+    variables:
+      imageTag: $[stageDependencies.Build.BuildImage.outputs['buildStep.imageTag']]
+    jobs:
+      - deployment: DeployStaging
+        displayName: "Deploy to Staging"
+        pool:
+          vmImage: "ubuntu-latest"
+        environment: "staging"                       # Azure DevOps environment with approvals
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # OIDC auth with deploy-scoped role
+                - template: vault-oidc-auth.yml
+                  parameters:
+                    vaultAddr: $(vaultAddr)
+                    vaultRole: "REPLACE_VAULT_ROLE_DEPLOY"
+                    azureServiceConnection: $(azureServiceConnection)
+
+                # Install SOPS
+                - script: |
+                    set -euo pipefail
+                    curl -fsSL -o /usr/local/bin/sops \
+                      "https://github.com/getsops/sops/releases/download/v$(sopsVersion)/sops-v$(sopsVersion).linux.amd64"
+                    chmod +x /usr/local/bin/sops
+                    sops --version
+                  displayName: "Install SOPS"
+
+                # Decrypt SOPS files using Vault Transit as KMS backend
+                - script: |
+                    set -euo pipefail
+                    export VAULT_ADDR="$(VAULT_ADDR)"
+                    export VAULT_TOKEN="$(VAULT_TOKEN)"
+
+                    DECRYPT_DIR=$(mktemp -d)
+                    echo "##vso[task.setvariable variable=DECRYPT_DIR]${DECRYPT_DIR}"
+
+                    SOPS_DIR="secrets/staging"
+                    FILE_COUNT=0
+                    for file in "${SOPS_DIR}"/*.yaml "${SOPS_DIR}"/*.yml; do
+                      [[ ! -f "${file}" ]] && continue
+                      BASENAME=$(basename "${file}")
+                      echo "Decrypting: ${file}"
+                      sops --decrypt "${file}" > "${DECRYPT_DIR}/${BASENAME}"
+                      FILE_COUNT=$((FILE_COUNT + 1))
+                    done
+
+                    if [[ "${FILE_COUNT}" -eq 0 ]]; then
+                      echo "##[error]No SOPS files found in ${SOPS_DIR}"
+                      exit 1
+                    fi
+                    echo "Decrypted ${FILE_COUNT} file(s)."
+                  displayName: "Decrypt SOPS secrets"
+
+                # Deploy to AKS
+                - task: AzureCLI@2
+                  displayName: "Deploy to Kubernetes"
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      # Get AKS credentials via Azure CLI (OIDC — no kubeconfig stored)
+                      az aks get-credentials \
+                        --resource-group "REPLACE_RESOURCE_GROUP" \
+                        --name "REPLACE_AKS_CLUSTER" \
+                        --overwrite-existing
+
+                      NAMESPACE="REPLACE_K8S_NAMESPACE"
+                      DECRYPT_DIR="$(DECRYPT_DIR)"
+
+                      # Create Kubernetes secret from decrypted files
+                      SECRET_ARGS=""
+                      for file in "${DECRYPT_DIR}"/*; do
+                        [[ ! -f "${file}" ]] && continue
+                        BASENAME=$(basename "${file}")
+                        SECRET_ARGS="${SECRET_ARGS} --from-file=${BASENAME}=${file}"
+                      done
+
+                      kubectl create secret generic app-secrets \
+                        --namespace="${NAMESPACE}" \
+                        ${SECRET_ARGS} \
+                        --dry-run=client -o yaml | kubectl apply -f -
+
+                      # Rollout
+                      FULL_IMAGE="$(containerRegistry)/$(imageName):$(imageTag)"
+                      kubectl set image deployment/app \
+                        --namespace="${NAMESPACE}" \
+                        "app=${FULL_IMAGE}"
+                      kubectl rollout status deployment/app \
+                        --namespace="${NAMESPACE}" \
+                        --timeout=300s
+                      echo "Deployment complete: ${FULL_IMAGE}"
+
+                # Cleanup
+                - script: |
+                    set -euo pipefail
+                    rm -rf "$(DECRYPT_DIR)" ~/.kube 2>/dev/null || true
+                    export VAULT_ADDR="$(VAULT_ADDR)"
+                    export VAULT_TOKEN="$(VAULT_TOKEN)"
+                    vault token revoke -self 2>/dev/null || true
+                    echo "Cleanup complete."
+                  displayName: "Cleanup secrets and tokens"
+                  condition: always()

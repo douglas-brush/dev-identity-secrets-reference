@@ -215,6 +215,7 @@ rotate_file() {
   # Decrypt to temp file
   local tmpfile
   tmpfile=$(mktemp)
+  # shellcheck disable=SC2064
   trap "rm -f '$tmpfile'" RETURN
 
   if ! sops --decrypt "$file" > "$tmpfile" 2>/dev/null; then
@@ -284,7 +285,6 @@ main() {
   printf '\n%s\n' "$(_bold '── Processing files ──')"
 
   local success_count=0
-  local error_count=0
 
   while IFS= read -r file; do
     [[ -z "$file" ]] && continue

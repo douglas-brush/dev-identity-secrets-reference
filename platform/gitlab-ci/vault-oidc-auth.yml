@@ -1,0 +1,142 @@
+# GitLab CI reusable job: Authenticate to Vault using GitLab's native OIDC.
+#
+# GitLab generates an OIDC JWT via `id_tokens` and exchanges it for a
+# short-lived Vault token. Zero static secrets are stored in CI variables.
+#
+# Usage — include this file and extend the job:
+#
+#   include:
+#     - local: 'platform/gitlab-ci/vault-oidc-auth.yml'
+#
+#   my-job:
+#     extends: .vault-oidc-auth
+#     variables:
+#       VAULT_ADDR: https://vault.example.com
+#       VAULT_ROLE: gitlab-ci-myproject
+#     script:
+#       - echo "VAULT_TOKEN is available in the environment"
+#       - vault kv get kv/data/myapp/config
+#
+# Prerequisites:
+#   1. Vault JWT auth backend mounted (e.g. auth/jwt/gitlab)
+#   2. Vault role configured with bound_claims matching this project:
+#        vault write auth/jwt/gitlab/role/gitlab-ci-myproject \
+#          role_type="jwt" \
+#          bound_audiences="https://vault.example.com" \
+#          bound_claims_type="glob" \
+#          bound_claims='{"namespace_path":"REPLACE_GITLAB_NAMESPACE/*","ref":"refs/heads/main"}' \
+#          user_claim="sub" \
+#          policies="ci-issuer" \
+#          token_ttl="600" \
+#          token_max_ttl="900"
+#   3. JWKS or OIDC discovery configured for GitLab:
+#        vault write auth/jwt/gitlab/config \
+#          oidc_discovery_url="https://gitlab.com" \
+#          bound_issuer="https://gitlab.com"
+
+# ---------------------------------------------------------------------------
+# Reusable hidden job — extend this in your pipeline jobs
+# ---------------------------------------------------------------------------
+.vault-oidc-auth:
+  # GitLab native OIDC token — injected automatically as $VAULT_ID_TOKEN
+  id_tokens:
+    VAULT_ID_TOKEN:
+      # The aud claim MUST match the bound_audiences in the Vault role.
+      # Using the Vault address as audience is the recommended convention.
+      aud: ${VAULT_ADDR}
+
+  variables:
+    # Override these in the extending job or at the project/group level.
+    VAULT_ADDR: "REPLACE_VAULT_ADDR"               # https://vault.example.com
+    VAULT_ROLE: "REPLACE_VAULT_ROLE"                # Vault JWT auth role name
+    VAULT_AUTH_PATH: "jwt/gitlab"                    # Mount path for GitLab JWT auth
+    VAULT_NAMESPACE: ""                              # Vault Enterprise namespace (empty for OSS)
+    VAULT_TOKEN_TTL: "600"                           # Requested token TTL in seconds
+
+  before_script:
+    - set -euo pipefail
+
+    # --- Install Vault CLI if not present -----------------------------------
+    - |
+      if ! command -v vault &>/dev/null; then
+        VAULT_VERSION="${VAULT_CLI_VERSION:-1.17.0}"
+        echo "Installing Vault CLI v${VAULT_VERSION}..."
+        wget -qO /tmp/vault.zip \
+          "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+        unzip -qo /tmp/vault.zip -d /usr/local/bin/
+        rm -f /tmp/vault.zip
+      fi
+      vault version
+
+    # --- Authenticate to Vault via JWT/OIDC ---------------------------------
+    # The VAULT_ID_TOKEN is a GitLab-signed JWT containing claims about this
+    # pipeline (project path, ref, environment, etc.). Vault validates the
+    # signature against GitLab's JWKS endpoint — no shared secret needed.
+    - |
+      echo "Authenticating to Vault at ${VAULT_ADDR} (role: ${VAULT_ROLE})..."
+      VAULT_RESPONSE=$(vault write -format=json \
+        "auth/${VAULT_AUTH_PATH}/login" \
+        role="${VAULT_ROLE}" \
+        jwt="${VAULT_ID_TOKEN}" \
+      ) || {
+        echo "ERROR: Vault OIDC authentication failed."
+        echo "Verify: bound_audiences matches VAULT_ADDR, bound_claims match project/ref."
+        exit 1
+      }
+
+    # --- Export VAULT_TOKEN for downstream commands -------------------------
+    - |
+      export VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r '.auth.client_token')
+      if [[ -z "${VAULT_TOKEN}" || "${VAULT_TOKEN}" == "null" ]]; then
+        echo "ERROR: Failed to extract Vault token from auth response."
+        exit 1
+      fi
+
+    # --- Validate the token -------------------------------------------------
+    - |
+      TOKEN_INFO=$(vault token lookup -format=json)
+      TTL=$(echo "${TOKEN_INFO}" | jq -r '.data.ttl')
+      POLICIES=$(echo "${TOKEN_INFO}" | jq -r '.data.policies | join(", ")')
+      echo "Vault token acquired — TTL: ${TTL}s, policies: ${POLICIES}"
+
+  after_script:
+    # --- Revoke the Vault token on job completion ---------------------------
+    # Best-effort revocation. If the job was cancelled or the token already
+    # expired, this is a no-op. Revocation limits blast radius if a runner
+    # is compromised after the job finishes.
+    - |
+      if [[ -n "${VAULT_TOKEN:-}" ]]; then
+        vault token revoke -self 2>/dev/null || true
+        echo "Vault token revoked."
+      fi
+
+# ---------------------------------------------------------------------------
+# Helper job: Fetch secrets from Vault and export as dotenv artifact
+# Chain this after auth to pass secrets to downstream jobs via artifacts.
+# ---------------------------------------------------------------------------
+.vault-fetch-secrets:
+  extends: .vault-oidc-auth
+  variables:
+    # Space-separated list of Vault KV paths to read.
+    VAULT_SECRET_PATHS: "REPLACE_SECRET_PATHS"      # e.g. "kv/data/myapp/db kv/data/myapp/api"
+    VAULT_SECRET_OUTPUT: "secrets.env"
+  script:
+    - set -euo pipefail
+    - |
+      > "${VAULT_SECRET_OUTPUT}"
+      for SECRET_PATH in ${VAULT_SECRET_PATHS}; do
+        echo "Reading: ${SECRET_PATH}"
+        # Extract all key-value pairs from the KV v2 data payload
+        vault kv get -format=json "${SECRET_PATH}" \
+          | jq -r '.data.data | to_entries[] | "\(.key)=\(.value)"' \
+          >> "${VAULT_SECRET_OUTPUT}"
+      done
+      LINES=$(wc -l < "${VAULT_SECRET_OUTPUT}")
+      echo "Exported ${LINES} secret(s) to ${VAULT_SECRET_OUTPUT}"
+  artifacts:
+    # Short-lived artifact — downstream jobs consume it, then it expires.
+    # SECURITY: artifacts are stored server-side. Keep expire_in minimal.
+    paths:
+      - "${VAULT_SECRET_OUTPUT}"
+    expire_in: 10 minutes
+    when: on_success

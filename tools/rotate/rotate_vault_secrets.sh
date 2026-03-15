@@ -21,7 +21,6 @@ EXIT_CODE=0
 # Counters
 TOTAL_SECRETS=0
 STALE_SECRETS=0
-ROTATED_SECRETS=0
 ERROR_COUNT=0
 
 # ── Color ─────────────────────────────────────────────────────────────────
@@ -286,9 +285,7 @@ check_secret_age() {
   fi
 
   # Determine status
-  local status="OK"
   if [[ "$age_days" -gt "$MAX_AGE_DAYS" ]]; then
-    status="STALE"
     STALE_SECRETS=$((STALE_SECRETS + 1))
     EXIT_CODE=1
 
@@ -299,7 +296,6 @@ check_secret_age() {
       send_webhook "$full_path" "$age_days" "$current_version" "$effective_time"
     fi
   elif [[ "$age_days" -gt $((MAX_AGE_DAYS * 3 / 4)) ]]; then
-    status="APPROACHING"
     log WARN "${full_path} — ${age_days} days old, approaching max age (v${current_version})"
   else
     [[ -n "$VERBOSE" ]] && log OK "${full_path} — ${age_days} days old (v${current_version})"

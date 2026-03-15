@@ -45,6 +45,8 @@
 !tests/**/*.json
 !tools/**/*.json
 !kyverno/**/*.json
+!lib/**/*.json
+!dev/**/*.json
 
 # Azure tokens
 .azure/
@@ -72,6 +74,18 @@ htmlcov/
 node_modules/
 .npm/
 package-lock.json
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Docker Compose local dev state
+dev/.env
+dev/data/
+dev/volumes/
 
 # === Infrastructure ===
 # Terraform

@@ -80,7 +80,11 @@ setup_hooks() {
   info "Setting up pre-commit hooks..."
   if command -v pre-commit &>/dev/null; then
     if [[ -f .pre-commit-config.yaml ]]; then
-      pre-commit install --allow-missing-config 2>/dev/null && ok "Pre-commit hooks installed" || warn "Pre-commit install failed (non-fatal)"
+      if pre-commit install --allow-missing-config 2>/dev/null; then
+        ok "Pre-commit hooks installed"
+      else
+        warn "Pre-commit install failed (non-fatal)"
+      fi
     else
       warn "No .pre-commit-config.yaml found"
     fi

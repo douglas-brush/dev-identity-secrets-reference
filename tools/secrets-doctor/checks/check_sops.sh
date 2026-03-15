@@ -143,7 +143,6 @@ check_sops() {
     # ── age recipient validation ─────────────────────────────────────────
 
     local age_recipients_found=0
-    local invalid_recipients=0
     while IFS= read -r line; do
       if [[ "$line" =~ age1[a-z0-9]{58} ]]; then
         age_recipients_found=$((age_recipients_found + 1))

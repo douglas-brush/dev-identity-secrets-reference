@@ -63,6 +63,8 @@ dev-identity-secrets-reference/
 │   ├── compliance/                    # NIST, ISO 27001, OWASP, CSA, CIS, SOC2, PCI DSS, CISA ZT
 │   └── incident-playbooks/            # Secret exposure response, break-glass procedures
 ├── diagrams/                          # Mermaid architecture diagrams and decision trees
+├── lib/python/                        # Python SDK for secrets management integration
+├── dev/                               # Docker Compose local dev environment
 ├── platform/
 │   ├── vault/                         # Server config, policies, auth methods, examples
 │   │   ├── config/                    # Production server config, VM agent config
@@ -71,6 +73,10 @@ dev-identity-secrets-reference/
 │   ├── github-actions/                # Reusable workflows + deployment examples
 │   │   ├── reusable/                  # OIDC Vault auth, secret scanning, SOPS decrypt
 │   │   └── workflows/                 # OIDC-to-Vault, deploy-with-secrets
+│   ├── gitlab-ci/                     # GitLab CI pipeline templates
+│   ├── azure-pipelines/               # Azure DevOps pipeline templates
+│   ├── jenkins/                       # Jenkins pipeline templates
+│   ├── circleci/                      # CircleCI pipeline templates
 │   └── local-dev/                     # direnv, env templates, encrypted config examples
 ├── bootstrap/scripts/                 # Developer automation
 │   ├── bootstrap_dev.sh               # Workstation setup
@@ -89,6 +95,11 @@ dev-identity-secrets-reference/
 │   ├── integration/                   # Vault dynamic credential tests
 │   └── e2e/                           # End-to-end reference validation
 ├── examples/
+│   ├── python/                        # Python integration examples
+│   ├── node/                          # Node.js integration examples
+│   ├── go/                            # Go integration examples
+│   ├── dotnet/                        # .NET integration examples
+│   ├── shell/                         # Shell integration examples
 │   ├── app/                           # Application integration patterns
 │   ├── vm/                            # Cloud-init + systemd + Vault Agent patterns
 │   ├── siem/                          # Vault audit log → Splunk/ELK integration
@@ -156,6 +167,53 @@ export VAULT_ADDR=https://vault.your-domain.com
 
 ```bash
 ./bootstrap/scripts/onboard_app.sh my-api dev
+```
+
+---
+
+## Local Development
+
+Spin up a full Vault environment locally with Docker Compose:
+
+```bash
+make dev-up          # Start Vault + supporting services
+make dev-setup       # Initialize and configure Vault
+make dev-demo        # Run the interactive demo
+```
+
+To tear down and start fresh:
+
+```bash
+make dev-reset       # Destroy volumes and recreate
+```
+
+---
+
+## SDK
+
+Install the Python SDK for programmatic secrets management:
+
+```bash
+pip install -e lib/python
+
+# Or via make
+make sdk-install
+```
+
+Basic usage:
+
+```python
+from secrets_sdk import VaultClient
+
+client = VaultClient()
+secret = client.get_secret("myapp/config", "api_key")
+```
+
+Run SDK tests and linting:
+
+```bash
+make sdk-test
+make sdk-lint
 ```
 
 ---

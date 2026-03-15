@@ -45,7 +45,9 @@ version_gte() {
   fi
 
   local IFS='.'
-  local i v1_parts=($v1) v2_parts=($v2)
+  local i
+  # shellcheck disable=SC2206
+  local v1_parts=($v1) v2_parts=($v2)
 
   for ((i = 0; i < ${#v2_parts[@]}; i++)); do
     local a="${v1_parts[i]:-0}"
@@ -123,8 +125,6 @@ check_min_version() {
 }
 
 check_deps() {
-  local all_required_present=true
-
   # Check required tools
   for entry in "${REQUIRED_TOOLS[@]}"; do
     local tool="${entry%%:*}"
@@ -137,7 +137,6 @@ check_deps() {
       check_min_version "$tool" "$ver"
     else
       fail "${desc} (${tool}) is NOT installed — required"
-      all_required_present=false
     fi
   done
 
