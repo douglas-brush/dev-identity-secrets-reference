@@ -1,0 +1,348 @@
+# FluentBit — Kubernetes DaemonSet for Vault Audit Log Forwarding
+#
+# Tails Vault audit log files from the host filesystem and forwards
+# to a configurable SIEM backend (Elasticsearch, Splunk, S3, etc.).
+#
+# Assumes Vault writes audit logs to /vault/audit/audit.log on the host,
+# which is mounted into FluentBit via hostPath.
+#
+# Deploy: kubectl apply -f fluentbit-vault-audit.yaml -n vault
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentbit-vault-audit-config
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: fluentbit
+    app.kubernetes.io/component: vault-audit
+    app.kubernetes.io/part-of: secrets-platform
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush           5
+        Daemon          Off
+        Log_Level       info
+        Parsers_File    parsers.conf
+        HTTP_Server     On
+        HTTP_Listen     0.0.0.0
+        HTTP_Port       2020
+        Health_Check    On
+        HC_Errors_Count 3
+        HC_Retry_Failure_Count 3
+        HC_Period       30
+        storage.path    /var/log/flb-storage/
+        storage.sync    normal
+        storage.checksum off
+        storage.max_chunks_up 128
+
+    [INPUT]
+        Name              tail
+        Tag               vault.audit
+        Path              /vault/audit/audit.log
+        Parser            json
+        DB                /var/log/flb-storage/vault-audit.db
+        DB.locking        true
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+        Read_from_Head    False
+        Rotate_Wait       30
+        storage.type      filesystem
+
+    [FILTER]
+        Name              modify
+        Match             vault.audit
+        Add               cluster ${CLUSTER_NAME}
+        Add               namespace vault
+        Add               service vault-audit
+
+    [FILTER]
+        Name              nest
+        Match             vault.audit
+        Operation         lift
+        Nested_under      request
+        Add_prefix        request_
+
+    [FILTER]
+        Name              nest
+        Match             vault.audit
+        Operation         lift
+        Nested_under      auth
+        Add_prefix        auth_
+
+    # ── Output: Elasticsearch ──────────────────────────────────────────────
+    # Uncomment for ELK stack integration
+    #
+    # [OUTPUT]
+    #     Name              es
+    #     Match             vault.audit
+    #     Host              elasticsearch.logging.svc.cluster.local
+    #     Port              9200
+    #     Index             vault-audit
+    #     Type              _doc
+    #     Logstash_Format   On
+    #     Logstash_Prefix   vault-audit
+    #     Logstash_DateFormat %Y.%m.%d
+    #     Time_Key          time
+    #     Time_Key_Format   %Y-%m-%dT%H:%M:%S.%LZ
+    #     Include_Tag_Key   On
+    #     Tag_Key           fluentbit_tag
+    #     Buffer_Size       512KB
+    #     Retry_Limit       5
+    #     tls               On
+    #     tls.verify        On
+    #     tls.ca_file       /fluent-bit/tls/ca.crt
+    #     Suppress_Type_Name On
+
+    # ── Output: Splunk HEC ─────────────────────────────────────────────────
+    # Uncomment for Splunk integration
+    #
+    # [OUTPUT]
+    #     Name              splunk
+    #     Match             vault.audit
+    #     Host              splunk-hec.example.internal
+    #     Port              8088
+    #     Splunk_Token      ${SPLUNK_HEC_TOKEN}
+    #     Splunk_Send_Raw   On
+    #     tls               On
+    #     tls.verify        On
+    #     tls.ca_file       /fluent-bit/tls/ca.crt
+    #     Retry_Limit       5
+    #     splunk_source     vault-audit
+    #     splunk_sourcetype hashicorp:vault:audit
+    #     splunk_index      vault_audit
+
+    # ── Output: S3 (long-term archive) ─────────────────────────────────────
+    # Uncomment for S3 archival alongside SIEM forwarding
+    #
+    # [OUTPUT]
+    #     Name              s3
+    #     Match             vault.audit
+    #     region            us-east-1
+    #     bucket            vault-audit-archive
+    #     total_file_size   50M
+    #     upload_timeout    10m
+    #     s3_key_format     /vault-audit/$TAG/%Y/%m/%d/%H-%M-%S
+    #     use_put_object    On
+    #     compression       gzip
+    #     content_type      application/gzip
+    #     store_dir         /var/log/flb-storage/s3-buffer
+
+    # ── Output: Forward to aggregator (Fluentd/FluentBit) ──────────────────
+    # Default active output — forward to a central FluentBit/Fluentd aggregator
+    [OUTPUT]
+        Name              forward
+        Match             vault.audit
+        Host              fluentbit-aggregator.logging.svc.cluster.local
+        Port              24224
+        Retry_Limit       10
+        tls               On
+        tls.verify        On
+        tls.ca_file       /fluent-bit/tls/ca.crt
+
+    # ── Output: stdout for debugging ───────────────────────────────────────
+    # Enable temporarily for troubleshooting
+    #
+    # [OUTPUT]
+    #     Name              stdout
+    #     Match             vault.audit
+    #     Format            json_lines
+
+  parsers.conf: |
+    [PARSER]
+        Name        json
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%LZ
+        Time_Keep   On
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentbit-vault-audit
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: fluentbit
+    app.kubernetes.io/component: vault-audit
+    app.kubernetes.io/part-of: secrets-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluentbit
+      app.kubernetes.io/component: vault-audit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluentbit
+        app.kubernetes.io/component: vault-audit
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2020"
+        prometheus.io/path: /api/v1/metrics/prometheus
+    spec:
+      serviceAccountName: fluentbit-vault-audit
+      automountServiceAccountToken: false
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      nodeSelector:
+        vault-node: "true"
+      containers:
+        - name: fluentbit
+          image: cr.fluentbit.io/fluent/fluent-bit:3.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-metrics
+              containerPort: 2020
+              protocol: TCP
+          env:
+            - name: CLUSTER_NAME
+              value: "vault-prod"
+            # Uncomment for Splunk HEC
+            # - name: SPLUNK_HEC_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: fluentbit-splunk-hec
+            #       key: token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc
+              readOnly: true
+            - name: vault-audit-logs
+              mountPath: /vault/audit
+              readOnly: true
+            - name: flb-storage
+              mountPath: /var/log/flb-storage
+            - name: tls
+              mountPath: /fluent-bit/tls
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http-metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: config
+          configMap:
+            name: fluentbit-vault-audit-config
+        - name: vault-audit-logs
+          hostPath:
+            path: /vault/audit
+            type: DirectoryOrCreate
+        - name: flb-storage
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: tls
+          secret:
+            secretName: fluentbit-tls
+            optional: true
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentbit-vault-audit
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: fluentbit
+    app.kubernetes.io/component: vault-audit
+automountServiceAccountToken: false
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentbit-vault-audit-metrics
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: fluentbit
+    app.kubernetes.io/component: vault-audit
+spec:
+  selector:
+    app.kubernetes.io/name: fluentbit
+    app.kubernetes.io/component: vault-audit
+  ports:
+    - name: http-metrics
+      port: 2020
+      targetPort: http-metrics
+      protocol: TCP
+  type: ClusterIP
+
+---
+# NetworkPolicy: allow FluentBit to reach the log aggregator and expose metrics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fluentbit-vault-audit-egress
+  namespace: vault
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fluentbit
+      app.kubernetes.io/component: vault-audit
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    # Allow Prometheus to scrape metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 2020
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # FluentBit aggregator
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+      ports:
+        - protocol: TCP
+          port: 24224
+    # Elasticsearch (if using direct output)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+      ports:
+        - protocol: TCP
+          port: 9200

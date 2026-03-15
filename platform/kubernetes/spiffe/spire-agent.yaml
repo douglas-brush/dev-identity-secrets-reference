@@ -1,6 +1,23 @@
-# SPIRE Agent — DaemonSet
-# Runs on every node and provides workload attestation + SVID issuance.
-# Connects to SPIRE Server and exposes the Workload API via a Unix domain socket.
+# =============================================================================
+# SPIRE Agent -- Reference Example
+# =============================================================================
+# NOT PRODUCTION-READY. Contains placeholder values that must be replaced.
+#
+# This manifest deploys:
+#   - ServiceAccount + ClusterRole + ClusterRoleBinding
+#   - ConfigMap with agent configuration
+#   - DaemonSet (runs on every node)
+#
+# Prerequisites:
+#   - SPIRE Server deployed and healthy
+#   - spire-bundle ConfigMap populated by the server's k8sbundle notifier
+#
+# Before deploying, replace:
+#   - trust_domain = "example.com"  --> must match SPIRE Server trust domain
+#   - cluster = "my-cluster"        --> must match SPIRE Server cluster name
+#
+# See README.md for full deployment order and production checklist.
+# =============================================================================
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -21,7 +38,8 @@ metadata:
     app.kubernetes.io/component: agent
     app.kubernetes.io/part-of: spiffe
 rules:
-  # Required for workload attestation — look up pod info
+  # Required for k8s workload attestation -- the agent looks up pod metadata
+  # to determine the identity of workloads connecting to the Workload API.
   - apiGroups: [""]
     resources: ["pods", "nodes", "nodes/proxy"]
     verbs: ["get", "list"]
@@ -56,26 +74,46 @@ data:
     agent {
       data_dir = "/run/spire"
       log_level = "INFO"
+
+      # SPIRE Server address -- agents connect here for node attestation
+      # and SVID issuance. Uses the in-cluster Service DNS name.
       server_address = "spire-server.spire.svc.cluster.local"
       server_port = "8081"
+
+      # Unix domain socket path where the Workload API is exposed.
+      # The CSI driver or hostPath mount makes this available to workload pods.
       socket_path = "/run/spire/sockets/agent.sock"
+
+      # Initial trust bundle for bootstrapping trust with the SPIRE Server.
+      # Mounted from the spire-bundle ConfigMap (populated by the server).
       trust_bundle_path = "/run/spire/bundle/bundle.crt"
+
+      # CHANGE: Must match the trust_domain in the SPIRE Server configuration.
       trust_domain = "example.com"
     }
 
     plugins {
+      # Node attestation via Kubernetes Projected Service Account Tokens.
+      # CHANGE: Must match the cluster name in the SPIRE Server configuration.
       NodeAttestor "k8s_psat" {
         plugin_data {
           cluster = "my-cluster"
         }
       }
 
+      # In-memory key manager -- agent keys do not need to persist across
+      # restarts since the agent re-attests on startup.
       KeyManager "memory" {
         plugin_data {}
       }
 
+      # Kubernetes workload attestor -- identifies connecting workloads by
+      # querying the kubelet for pod metadata (namespace, service account,
+      # labels, etc.).
       WorkloadAttestor "k8s" {
         plugin_data {
+          # Set to false in production. When true, the agent skips TLS
+          # verification of the kubelet, which weakens attestation security.
           skip_kubelet_verification = false
         }
       }
@@ -111,8 +149,14 @@ spec:
         app.kubernetes.io/component: agent
     spec:
       serviceAccountName: spire-agent
-      # hostPID required for workload attestation (mapping socket caller to pod)
+
+      # hostPID: required for PID-based workload attestation -- the agent
+      # maps the PID of the workload connecting to the Unix socket back to
+      # a Kubernetes pod via the kubelet API.
       hostPID: true
+
+      # hostNetwork: required so the agent can reach the kubelet directly
+      # for workload attestation without going through kube-proxy.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
 
@@ -121,7 +165,9 @@ spec:
           type: RuntimeDefault
 
       initContainers:
-        # Wait for the trust bundle to be available
+        # Block agent startup until the trust bundle is available.
+        # The spire-bundle ConfigMap is populated by the SPIRE Server's
+        # k8sbundle notifier plugin after the server starts.
         - name: init-bundle
           image: ghcr.io/spiffe/spire-agent:1.9.6
           command: ["sh", "-c"]
@@ -150,6 +196,7 @@ spec:
 
       containers:
         - name: spire-agent
+          # CHANGE: Pin to your tested version. Must match SPIRE Server version.
           image: ghcr.io/spiffe/spire-agent:1.9.6
           args:
             - "-config"
@@ -159,14 +206,18 @@ spec:
               containerPort: 8080
               protocol: TCP
           securityContext:
-            # Agent needs elevated privileges for workload attestation
+            # Agent runs as root for PID-based workload attestation.
             runAsUser: 0
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
               add:
-                - SYS_PTRACE   # Required for PID-based workload attestation
+                # SYS_PTRACE: required for the agent to inspect the PID of
+                # workloads connecting to the Workload API Unix socket and
+                # map them back to Kubernetes pods.
+                - SYS_PTRACE
+          # CHANGE: Right-size based on node workload density.
           resources:
             requests:
               cpu: 50m
@@ -199,9 +250,12 @@ spec:
         - name: config
           configMap:
             name: spire-agent-config
+        # Trust bundle -- mounted from the ConfigMap populated by the server.
         - name: spire-bundle
           configMap:
             name: spire-bundle
+        # Workload API socket directory -- shared with the CSI driver or
+        # directly with workload pods via hostPath.
         - name: spire-sockets
           hostPath:
             path: /run/spire/sockets

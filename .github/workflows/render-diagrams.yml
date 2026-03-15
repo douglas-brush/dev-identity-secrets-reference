@@ -1,0 +1,134 @@
+# Renders Mermaid .mmd files in diagrams/ to SVG on push to main.
+# Commits rendered SVGs back to the repo only if files changed.
+
+name: "Render: Mermaid Diagrams"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'diagrams/*.mmd'
+      - '.github/workflows/render-diagrams.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: render-diagrams
+  cancel-in-progress: true
+
+jobs:
+  render:
+    name: Render Mermaid to SVG
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Use a token that can push commits back
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Mermaid CLI
+        run: |
+          set -euo pipefail
+          npm install -g @mermaid-js/mermaid-cli
+          echo "::notice::Installed mermaid-cli $(mmdc --version 2>/dev/null || echo 'unknown')"
+
+      - name: Create Mermaid config
+        run: |
+          cat > /tmp/mermaid-config.json << 'EOF'
+          {
+            "theme": "default",
+            "themeVariables": {
+              "fontFamily": "Inter, system-ui, sans-serif"
+            }
+          }
+          EOF
+
+      - name: Render .mmd files to SVG
+        id: render
+        run: |
+          set -euo pipefail
+          RENDERED=0
+          ERRORS=0
+
+          for mmd_file in diagrams/*.mmd; do
+            [[ ! -f "$mmd_file" ]] && continue
+
+            BASENAME=$(basename "$mmd_file" .mmd)
+            SVG_FILE="diagrams/${BASENAME}.svg"
+
+            echo "Rendering: ${mmd_file} -> ${SVG_FILE}"
+            if mmdc -i "$mmd_file" -o "$SVG_FILE" \
+                -c /tmp/mermaid-config.json \
+                --backgroundColor transparent \
+                -p puppeteer-config.json 2>/dev/null || \
+               mmdc -i "$mmd_file" -o "$SVG_FILE" \
+                -c /tmp/mermaid-config.json \
+                --backgroundColor transparent; then
+              RENDERED=$((RENDERED + 1))
+            else
+              echo "::error::Failed to render ${mmd_file}"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          echo "rendered=${RENDERED}" >> "$GITHUB_OUTPUT"
+          echo "errors=${ERRORS}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Rendered ${RENDERED} diagram(s), ${ERRORS} error(s)"
+
+          if [[ "$ERRORS" -gt 0 ]]; then
+            exit 1
+          fi
+
+      - name: Check for changes
+        id: changes
+        run: |
+          set -euo pipefail
+          git add diagrams/*.svg 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No diagram changes detected — skipping commit"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            CHANGED_FILES=$(git diff --cached --name-only | wc -l | tr -d ' ')
+            echo "::notice::${CHANGED_FILES} SVG file(s) changed"
+          fi
+
+      - name: Commit rendered SVGs
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "docs: render mermaid diagrams to SVG [skip ci]"
+          git push
+
+          echo "::notice::Committed and pushed rendered SVG diagrams"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Mermaid Diagram Rendering" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Diagrams rendered | ${{ steps.render.outputs.rendered }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Render errors | ${{ steps.render.outputs.errors }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Changes committed | ${{ steps.changes.outputs.changed }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Source Files" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source | Output |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`diagrams/01-reference-architecture.mmd\` | \`diagrams/01-reference-architecture.svg\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`diagrams/02-developer-credential-flow.mmd\` | \`diagrams/02-developer-credential-flow.svg\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`diagrams/03-runtime-secret-delivery.mmd\` | \`diagrams/03-runtime-secret-delivery.svg\` |" >> "$GITHUB_STEP_SUMMARY"

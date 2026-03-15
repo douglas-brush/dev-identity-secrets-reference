@@ -81,6 +81,7 @@ $(_bold 'COMMANDS')
   k8s       Check Kubernetes secret configurations
   sops      Validate SOPS configuration
   git       Check git hooks, .gitignore, and history
+  certs     Check certificate files and cert-manager health
 
 $(_bold 'OPTIONS')
   --no-color    Disable colored output
@@ -118,7 +119,7 @@ while [[ $# -gt 0 ]]; do
     --no-color)   NO_COLOR=1; shift ;;
     --json)       JSON_OUTPUT=1; shift ;;
     --verbose)    VERBOSE=1; shift ;;
-    deps|audit|vault|k8s|sops|git|all)
+    deps|audit|vault|k8s|sops|git|certs|all)
                   COMMANDS+=("$1"); shift ;;
     *)
       printf 'Error: unknown argument: %s\n' "$1" >&2
@@ -132,7 +133,7 @@ done
 
 # Expand "all" into individual commands
 if [[ " ${COMMANDS[*]} " == *" all "* ]]; then
-  COMMANDS=("deps" "sops" "git" "audit" "vault" "k8s")
+  COMMANDS=("deps" "sops" "git" "audit" "vault" "k8s" "certs")
 fi
 
 SKIP_LIST="${SECRETS_DOCTOR_SKIP:-}"
@@ -301,6 +302,16 @@ run_k8s_check() {
   check_k8s
 }
 
+run_certs_check() {
+  if should_skip "certs"; then
+    skip "Certificate checks (skipped via SECRETS_DOCTOR_SKIP)"
+    return
+  fi
+  section "Certificate Health"
+  source_check "check_certs.sh"
+  check_certs
+}
+
 # ── Built-in plaintext scan ─────────────────────────────────────────────────
 
 run_plaintext_scan() {
@@ -400,6 +411,7 @@ main() {
       audit)  run_audit_check ;;
       vault)  run_vault_check ;;
       k8s)    run_k8s_check ;;
+      certs)  run_certs_check ;;
       *)      fail "Unknown command: $cmd" ;;
     esac
   done

@@ -1,0 +1,336 @@
+# Prometheus / Alertmanager Rules — Secrets Infrastructure Alerts
+#
+# Deploy as a PrometheusRule CRD (kube-prometheus-stack) or include
+# in Prometheus rule_files configuration.
+#
+# Prerequisites:
+#   - Vault telemetry scraped by Prometheus (vault-server.hcl telemetry block)
+#   - cert-manager metrics exposed (--enable-metrics flag)
+#   - kube-state-metrics running for Secret resource tracking
+#
+# Apply: kubectl apply -f alert-rules.yaml -n monitoring
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: secrets-infrastructure-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: secrets-platform
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ═══════════════════════════════════════════════════════════════════════
+    # Vault Authentication & Access
+    # ═══════════════════════════════════════════════════════════════════════
+    - name: vault.authentication
+      interval: 30s
+      rules:
+        # Failed login attempts — potential brute force
+        - alert: VaultAuthFailureSpike
+          expr: |
+            sum(rate(vault_core_handle_login_request{error!=""}[5m])) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+            category: authentication
+          annotations:
+            summary: "Vault authentication failure rate elevated"
+            description: >-
+              Vault is experiencing more than 0.5 failed login requests per
+              second over the last 5 minutes. This may indicate brute force
+              attempts or misconfigured service authentication.
+            runbook_url: "docs/incident-playbooks/secret-exposure-response.md"
+
+        - alert: VaultAuthFailureCritical
+          expr: |
+            sum(rate(vault_core_handle_login_request{error!=""}[5m])) > 5
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+            category: authentication
+          annotations:
+            summary: "Vault authentication failure rate critical"
+            description: >-
+              More than 5 failed Vault login requests per second sustained
+              over 2 minutes. Likely credential stuffing or service outage.
+            runbook_url: "docs/incident-playbooks/secret-exposure-response.md"
+
+        # Token creation spike — unusual service behavior
+        - alert: VaultTokenCreationSpike
+          expr: |
+            sum(rate(vault_token_create_count[10m]))
+            > 3 * sum(rate(vault_token_create_count[1h] offset 1h))
+          for: 10m
+          labels:
+            severity: warning
+            team: security
+            category: authentication
+          annotations:
+            summary: "Vault token creation rate 3x above baseline"
+            description: >-
+              Token creation rate over the last 10 minutes is 3x the
+              previous hour's baseline. Investigate for credential
+              stuffing or runaway automation.
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Vault Secret Access Anomalies
+    # ═══════════════════════════════════════════════════════════════════════
+    - name: vault.secret-access
+      interval: 30s
+      rules:
+        # High rate of secret reads — potential exfiltration
+        - alert: VaultSecretReadSpike
+          expr: |
+            sum(rate(vault_secret_kv_count{operation="get"}[10m]))
+            > 5 * sum(rate(vault_secret_kv_count{operation="get"}[1h] offset 1h))
+          for: 10m
+          labels:
+            severity: warning
+            team: security
+            category: secret-access
+          annotations:
+            summary: "Vault KV secret read rate 5x above baseline"
+            description: >-
+              Secret read operations are significantly above the
+              rolling baseline. This could indicate credential
+              harvesting or a misconfigured application.
+
+        # Privileged path access
+        - alert: VaultPrivilegedPathAccess
+          expr: |
+            sum(rate(vault_audit_log_request_count{path=~"sys/(seal|unseal|init|policies|auth|audit).*"}[5m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            team: security
+            category: privileged-access
+          annotations:
+            summary: "Access to Vault privileged sys/ paths detected"
+            description: >-
+              Requests to privileged Vault system paths have been detected.
+              Verify this is authorized administrative activity.
+            runbook_url: "docs/incident-playbooks/break-glass-procedure.md"
+
+        # Dynamic credential generation spike
+        - alert: VaultDynamicCredentialSpike
+          expr: |
+            sum(rate(vault_secret_lease_creation_count[10m]))
+            > 3 * sum(rate(vault_secret_lease_creation_count[1h] offset 1h))
+          for: 10m
+          labels:
+            severity: warning
+            team: security
+            category: secret-access
+          annotations:
+            summary: "Dynamic credential creation rate elevated"
+            description: >-
+              Lease creation rate is 3x above baseline. May indicate
+              abnormal workload scaling or credential abuse.
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Vault Audit & Health
+    # ═══════════════════════════════════════════════════════════════════════
+    - name: vault.health
+      interval: 30s
+      rules:
+        # Audit device failure — compliance critical
+        - alert: VaultAuditDeviceFailure
+          expr: |
+            vault_audit_log_request_failure > 0
+          for: 1m
+          labels:
+            severity: critical
+            team: security
+            category: audit
+          annotations:
+            summary: "Vault audit device is failing"
+            description: >-
+              One or more Vault audit devices are failing to write.
+              If all audit devices fail, Vault will block ALL client
+              requests. Immediate remediation required.
+            runbook_url: "docs/09-runbooks.md"
+
+        # Vault sealed
+        - alert: VaultSealed
+          expr: |
+            vault_core_unsealed == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+            category: availability
+          annotations:
+            summary: "Vault instance is sealed"
+            description: >-
+              A Vault instance has been sealed. All secret operations
+              will fail until it is unsealed. Check for auto-unseal
+              issues or manual seal events.
+            runbook_url: "docs/incident-playbooks/break-glass-procedure.md"
+
+        # Vault not initialized
+        - alert: VaultNotInitialized
+          expr: |
+            vault_core_active == 0 and vault_core_unsealed == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+            category: availability
+          annotations:
+            summary: "Vault instance not initialized or not active"
+            description: >-
+              Vault appears to be neither active nor unsealed for over
+              5 minutes. This may indicate a failed initialization or
+              a split-brain scenario in the Raft cluster.
+
+        # Leadership changes — potential instability
+        - alert: VaultLeadershipFlapping
+          expr: |
+            changes(vault_core_active[15m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+            category: availability
+          annotations:
+            summary: "Vault leadership changing frequently"
+            description: >-
+              Vault leadership has changed more than 3 times in 15
+              minutes. This indicates cluster instability — check
+              Raft cluster health and network connectivity.
+
+        # Lease expiry backlog
+        - alert: VaultLeaseExpiryBacklog
+          expr: |
+            vault_expire_num_leases > 50000
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+            category: performance
+          annotations:
+            summary: "Vault has a large number of active leases"
+            description: >-
+              There are over 50,000 active leases. This can degrade
+              Vault performance during expiry sweeps. Review lease
+              TTLs and application credential renewal patterns.
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Certificate Expiry (cert-manager + Vault PKI)
+    # ═══════════════════════════════════════════════════════════════════════
+    - name: certificates.expiry
+      interval: 60s
+      rules:
+        # cert-manager certificate approaching expiry
+        - alert: CertificateExpiringSoon
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+            team: platform
+            category: certificate
+          annotations:
+            summary: "Certificate {{ $labels.name }} expires in less than 7 days"
+            description: >-
+              Certificate {{ $labels.name }} in namespace
+              {{ $labels.namespace }} expires in less than 7 days.
+              Verify cert-manager is renewing it automatically.
+
+        - alert: CertificateExpiryCritical
+          expr: |
+            certmanager_certificate_expiration_timestamp_seconds - time() < 24 * 3600
+          for: 10m
+          labels:
+            severity: critical
+            team: platform
+            category: certificate
+          annotations:
+            summary: "Certificate {{ $labels.name }} expires in less than 24 hours"
+            description: >-
+              Certificate {{ $labels.name }} in namespace
+              {{ $labels.namespace }} will expire within 24 hours.
+              Manual intervention likely required — check cert-manager
+              logs and issuer health.
+
+        # cert-manager certificate not ready
+        - alert: CertificateNotReady
+          expr: |
+            certmanager_certificate_ready_status{condition="False"} == 1
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+            category: certificate
+          annotations:
+            summary: "Certificate {{ $labels.name }} is not ready"
+            description: >-
+              Certificate {{ $labels.name }} in namespace
+              {{ $labels.namespace }} has been in a not-ready state
+              for over 15 minutes. Check cert-manager events and
+              issuer connectivity.
+
+        # cert-manager renewal failure
+        - alert: CertificateRenewalFailure
+          expr: |
+            increase(certmanager_certificate_renewal_timestamp_seconds[1h]) == 0
+            and certmanager_certificate_expiration_timestamp_seconds - time() < 3 * 24 * 3600
+          for: 1h
+          labels:
+            severity: critical
+            team: platform
+            category: certificate
+          annotations:
+            summary: "Certificate {{ $labels.name }} renewal appears stalled"
+            description: >-
+              Certificate {{ $labels.name }} has not renewed in the last
+              hour and expires in less than 3 days. The renewal process
+              may be stuck — check cert-manager controller logs.
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Kubernetes Secret Hygiene
+    # ═══════════════════════════════════════════════════════════════════════
+    - name: kubernetes.secrets
+      interval: 60s
+      rules:
+        # Secret not managed by ExternalSecrets or CSI
+        - alert: UnmanagedKubernetesSecret
+          expr: |
+            kube_secret_info{namespace!~"kube-system|kube-public|kube-node-lease"}
+            unless on(namespace, secret)
+            kube_secret_labels{label_app_kubernetes_io_managed_by=~"external-secrets|secrets-store-csi-driver"}
+          for: 24h
+          labels:
+            severity: info
+            team: platform
+            category: secret-hygiene
+          annotations:
+            summary: "Unmanaged Kubernetes Secret detected"
+            description: >-
+              Secret {{ $labels.secret }} in namespace
+              {{ $labels.namespace }} is not managed by ExternalSecrets
+              or CSI driver. Consider migrating to a managed delivery
+              pattern for rotation and auditability.
+
+        # ExternalSecret sync failure
+        - alert: ExternalSecretSyncFailure
+          expr: |
+            externalsecret_status_condition{condition="Ready", status="False"} == 1
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+            category: secret-delivery
+          annotations:
+            summary: "ExternalSecret {{ $labels.name }} sync failing"
+            description: >-
+              ExternalSecret {{ $labels.name }} in namespace
+              {{ $labels.namespace }} has been failing to sync for
+              over 15 minutes. Vault connectivity or permission
+              issue likely.

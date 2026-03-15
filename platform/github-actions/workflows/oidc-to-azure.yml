@@ -1,14 +1,19 @@
 # Complete example: GitHub Actions OIDC authentication to Azure.
 #
 # Demonstrates:
-# - OIDC federation via Azure AD workload identity
-# - Azure Key Vault secret read
-# - AKS credential fetch
+# - OIDC federation via Azure AD workload identity (no client secrets)
+# - Azure Key Vault secret read with masking
+# - Azure Blob Storage access verification
+# - Azure Container Registry (ACR) login
+# - AKS credential fetch and cluster verification
+# - Explicit session cleanup
 #
 # Prerequisites:
 # - Azure AD app registration with federated credential for this repo
 # - Key Vault with RBAC access policy for the app
 # - AKS cluster with the app granted Azure Kubernetes Service Cluster User role
+# - Storage account with the app granted Storage Blob Data Reader role (optional)
+# - ACR with the app granted AcrPull/AcrPush role (optional)
 
 name: "Example: OIDC to Azure"
 
@@ -59,11 +64,12 @@ jobs:
           SUB_NAME=$(echo "$ACCOUNT_INFO" | jq -r '.name')
           SUB_ID=$(echo "$ACCOUNT_INFO" | jq -r '.id')
           TENANT_ID=$(echo "$ACCOUNT_INFO" | jq -r '.tenantId')
-          echo "::notice::Authenticated to subscription '${SUB_NAME}' (${SUB_ID})"
+          USER_TYPE=$(echo "$ACCOUNT_INFO" | jq -r '.user.type')
+          echo "::notice::Authenticated to subscription '${SUB_NAME}' (${SUB_ID}) via ${USER_TYPE}"
           echo "subscription_id=${SUB_ID}" >> "$GITHUB_OUTPUT"
           echo "tenant_id=${TENANT_ID}" >> "$GITHUB_OUTPUT"
 
-  # ── Step 2: Key Vault secret read ─────────────────────────────────────
+  # ── Step 2: Key Vault secret read ────────────────────────────────────
   keyvault:
     name: Read Key Vault Secrets
     runs-on: ubuntu-latest
@@ -144,7 +150,142 @@ jobs:
             --query '[].{Name:name, Enabled:attributes.enabled, Updated:attributes.updated}' \
             --output table >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
-  # ── Step 3: AKS credential fetch ──────────────────────────────────────
+  # ── Step 3: Blob Storage access verification ─────────────────────────
+  storage-access:
+    name: Verify Blob Storage Access
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: azure-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: List and verify storage access
+        run: |
+          set -euo pipefail
+          STORAGE_ACCOUNT="${{ vars.AZURE_STORAGE_ACCOUNT }}"
+
+          if [[ -z "${STORAGE_ACCOUNT:-}" ]]; then
+            echo "::notice::AZURE_STORAGE_ACCOUNT not configured, listing accessible accounts"
+
+            # List storage accounts visible to the identity
+            ACCOUNTS=$(az storage account list \
+              --query '[].{Name:name, Location:location, Kind:kind}' \
+              --output table 2>/dev/null || true)
+
+            if [[ -n "$ACCOUNTS" ]]; then
+              ACCOUNT_COUNT=$(az storage account list --query 'length(@)' --output tsv 2>/dev/null || echo '0')
+              echo "::notice::Identity has access to ${ACCOUNT_COUNT} storage account(s)"
+            else
+              echo "::notice::No storage accounts accessible with current identity"
+            fi
+            exit 0
+          fi
+
+          # Verify access to specific storage account
+          echo "Verifying access to storage account: ${STORAGE_ACCOUNT}"
+
+          # List containers using Azure AD auth (--auth-mode login)
+          CONTAINERS=$(az storage container list \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login \
+            --query '[].name' \
+            --output tsv 2>/dev/null) || {
+              echo "::warning::Cannot list containers in ${STORAGE_ACCOUNT} (check RBAC)"
+              exit 0
+            }
+
+          if [[ -n "$CONTAINERS" ]]; then
+            CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
+            echo "::notice::Storage access verified — ${CONTAINER_COUNT} container(s) accessible"
+          else
+            echo "::notice::No containers found in ${STORAGE_ACCOUNT}"
+          fi
+
+          # Test access to a specific container if configured
+          TARGET_CONTAINER="${{ vars.AZURE_STORAGE_CONTAINER }}"
+          if [[ -n "${TARGET_CONTAINER:-}" ]]; then
+            BLOB_COUNT=$(az storage blob list \
+              --account-name "$STORAGE_ACCOUNT" \
+              --container-name "$TARGET_CONTAINER" \
+              --auth-mode login \
+              --query 'length(@)' \
+              --output tsv 2>/dev/null || echo '0')
+            echo "::notice::Container '${TARGET_CONTAINER}' contains ${BLOB_COUNT} blob(s)"
+          fi
+
+  # ── Step 4: Azure Container Registry login ───────────────────────────
+  acr-login:
+    name: ACR Container Registry Login
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: azure-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        id: acr-login
+        run: |
+          set -euo pipefail
+          ACR_NAME="${{ vars.AZURE_ACR_NAME }}"
+
+          if [[ -z "${ACR_NAME:-}" ]]; then
+            echo "::notice::AZURE_ACR_NAME not configured, skipping ACR login"
+            echo "logged_in=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Login using the OIDC-authenticated Azure CLI session
+          az acr login --name "$ACR_NAME" 2>/dev/null || {
+            echo "::error::Failed to login to ACR: ${ACR_NAME}"
+            exit 1
+          }
+
+          LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query 'loginServer' --output tsv 2>/dev/null)
+          echo "::add-mask::${LOGIN_SERVER}"
+          echo "login_server=${LOGIN_SERVER}" >> "$GITHUB_OUTPUT"
+          echo "logged_in=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Logged in to ACR: ${LOGIN_SERVER}"
+
+      - name: Verify ACR access
+        if: steps.acr-login.outputs.logged_in == 'true'
+        env:
+          ACR_LOGIN_SERVER: ${{ steps.acr-login.outputs.login_server }}
+        run: |
+          set -euo pipefail
+          ACR_NAME="${{ vars.AZURE_ACR_NAME }}"
+
+          # List repositories accessible to this identity
+          REPOS=$(az acr repository list \
+            --name "$ACR_NAME" \
+            --output tsv 2>/dev/null || true)
+
+          if [[ -n "$REPOS" ]]; then
+            REPO_COUNT=$(echo "$REPOS" | wc -l | tr -d ' ')
+            echo "::notice::ACR access verified — ${REPO_COUNT} repositor(ies) accessible"
+          else
+            echo "::notice::No repositories found in ACR (identity may not have AcrPull)"
+          fi
+
+      - name: ACR logout
+        if: always() && steps.acr-login.outputs.logged_in == 'true'
+        run: |
+          ACR_LOGIN_SERVER="${{ steps.acr-login.outputs.login_server }}"
+          docker logout "${ACR_LOGIN_SERVER}" 2>/dev/null || true
+          echo "::notice::ACR logout complete"
+
+  # ── Step 5: AKS credential fetch ─────────────────────────────────────
   aks-creds:
     name: Fetch AKS Credentials
     runs-on: ubuntu-latest
@@ -199,23 +340,44 @@ jobs:
         run: |
           rm -f ~/.kube/config 2>/dev/null || true
 
-  # ── Summary ───────────────────────────────────────────────────────────
-  summary:
-    name: Workflow Summary
+  # ── Step 6: Cleanup ──────────────────────────────────────────────────
+  cleanup:
+    name: Cleanup Azure Session
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    needs: [azure-auth, keyvault, aks-creds]
+    timeout-minutes: 5
+    needs: [azure-auth, keyvault, storage-access, acr-login, aks-creds]
     if: always()
     steps:
+      - name: Azure Login (for cleanup verification)
+        uses: azure/login@v2
+        continue-on-error: true
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Clear cached credentials
+        run: |
+          set -euo pipefail
+          # Azure CLI uses token cache — clear it
+          az account clear 2>/dev/null || true
+          rm -rf ~/.azure/msal_token_cache.* 2>/dev/null || true
+          rm -f ~/.kube/config 2>/dev/null || true
+          echo "::notice::Azure session cleared — all cached tokens removed"
+
       - name: Generate summary
         run: |
           echo "## Azure OIDC Workflow Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Environment:** ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Subscription:** ${{ needs.azure-auth.outputs.subscription_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tenant:** ${{ needs.azure-auth.outputs.tenant_id }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Operation | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| OIDC Authentication | ${{ needs.azure-auth.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Key Vault Read | ${{ needs.keyvault.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Blob Storage Access | ${{ needs.storage-access.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ACR Login | ${{ needs.acr-login.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| AKS Credentials | ${{ needs.aks-creds.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Session Cleanup | completed |" >> "$GITHUB_STEP_SUMMARY"

@@ -1,8 +1,28 @@
-# SPIRE Server — Deployment + ConfigMap + Service
-# The SPIRE Server is the central authority that issues SVIDs (SPIFFE Verifiable
-# Identity Documents) to workloads. It maintains the registration entries and
-# manages the trust bundle.
-# Requires: SPIRE CRDs installed, persistent storage for datastore.
+# =============================================================================
+# SPIRE Server -- Reference Example
+# =============================================================================
+# NOT PRODUCTION-READY. Contains placeholder values that must be replaced.
+#
+# This manifest deploys:
+#   - Namespace (spire)
+#   - ServiceAccount + ClusterRole + ClusterRoleBinding
+#   - ConfigMap with server configuration
+#   - StatefulSet (single replica with SQLite -- NOT suitable for production)
+#   - Service (ClusterIP for agent connections)
+#   - Trust bundle ConfigMap (auto-populated by k8sbundle notifier)
+#
+# Prerequisites:
+#   - SPIRE CRDs installed (from spire-controller-manager)
+#   - StorageClass available for PVC provisioning
+#
+# Before deploying, replace:
+#   - trust_domain = "example.com"  --> your organization's trust domain
+#   - cluster name "my-cluster"     --> your Kubernetes cluster name
+#   - DataStore "sql" / sqlite3     --> PostgreSQL for production
+#   - KeyManager "disk"             --> cloud KMS or Vault for production
+#
+# See README.md for full deployment order and production checklist.
+# =============================================================================
 ---
 apiVersion: v1
 kind: Namespace
@@ -11,6 +31,7 @@ metadata:
   labels:
     app.kubernetes.io/name: spire
     app.kubernetes.io/part-of: spiffe
+    # Pod Security Standards -- restrict all pods in the namespace
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -34,18 +55,19 @@ metadata:
     app.kubernetes.io/component: server
     app.kubernetes.io/part-of: spiffe
 rules:
-  # Token review for node attestation
+  # Token review -- required for k8s_psat node attestation
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]
-  # Pod lookup for workload attestation
+  # Pod/node lookup -- required for workload attestation verification
   - apiGroups: [""]
     resources: ["pods", "nodes"]
     verbs: ["get", "list", "watch"]
-  # Manage SPIFFE ID CRDs
+  # ClusterSPIFFEID management -- required for SPIRE Controller Manager integration
   - apiGroups: ["spire.spiffe.io"]
     resources: ["clusterspiffeids", "clusterspiffeids/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Federation -- required for cross-domain trust
   - apiGroups: ["spire.spiffe.io"]
     resources: ["clusterfederatedtrustdomains", "clusterfederatedtrustdomains/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
@@ -80,16 +102,28 @@ data:
     server {
       bind_address = "0.0.0.0"
       bind_port = "8081"
+
+      # CHANGE: Replace with your organization's SPIFFE trust domain.
+      # This value is immutable after initial deployment -- choose carefully.
+      # Convention: use a domain you own (e.g., prod.mycompany.com).
       trust_domain = "example.com"
+
       data_dir = "/run/spire/data"
       log_level = "INFO"
-      ca_ttl = "168h"        # 7 days — intermediate CA lifetime
-      default_x509_svid_ttl = "4h"
-      default_jwt_svid_ttl = "1h"
 
+      # CA and SVID lifetimes -- tune to your security policy.
+      # ca_ttl: lifetime of the intermediate CA certificate SPIRE manages.
+      # default_x509_svid_ttl: default lifetime for workload X.509 SVIDs.
+      # default_jwt_svid_ttl: default lifetime for JWT SVIDs.
+      ca_ttl = "168h"                # 7 days -- intermediate CA lifetime
+      default_x509_svid_ttl = "4h"   # 4 hours -- workload certificate lifetime
+      default_jwt_svid_ttl = "1h"    # 1 hour -- JWT token lifetime
+
+      # EC P-256 is the recommended key type for CA signing keys.
       ca_key_type = "ec-p256"
 
-      # Federation — allow trust bundle exchange with other trust domains
+      # PRODUCTION: Enable federation to allow cross-domain trust.
+      # Uncomment and configure the bundle endpoint for federation.
       # federation {
       #   bundle_endpoint {
       #     address = "0.0.0.0"
@@ -99,6 +133,17 @@ data:
     }
 
     plugins {
+      # CHANGE FOR PRODUCTION: Replace SQLite with PostgreSQL.
+      # SQLite does not support HA (multiple server replicas) and is not
+      # suitable for production workloads.
+      #
+      # Production example:
+      #   DataStore "sql" {
+      #     plugin_data {
+      #       database_type = "postgres"
+      #       connection_string = "dbname=spire_datastore host=postgres.spire.svc port=5432 user=spire password=<from-secret> sslmode=verify-full"
+      #     }
+      #   }
       DataStore "sql" {
         plugin_data {
           database_type = "sqlite3"
@@ -106,6 +151,9 @@ data:
         }
       }
 
+      # Node attestation via Kubernetes Projected Service Account Tokens (PSAT).
+      # CHANGE: Replace "my-cluster" with your actual cluster name.
+      # The cluster name must match the value in the SPIRE Agent configuration.
       NodeAttestor "k8s_psat" {
         plugin_data {
           clusters = {
@@ -116,18 +164,47 @@ data:
         }
       }
 
+      # CHANGE FOR PRODUCTION: Replace disk-based key manager with cloud KMS.
+      # Disk-based keys are stored in the PVC -- if the PVC is compromised,
+      # the CA signing keys are exposed.
+      #
+      # Production alternatives:
+      #   KeyManager "aws_kms"  { plugin_data { ... } }
+      #   KeyManager "gcp_kms" { plugin_data { ... } }
+      #   KeyManager "vault"   { plugin_data { ... } }
       KeyManager "disk" {
         plugin_data {
           keys_path = "/run/spire/data/keys.json"
         }
       }
 
+      # Automatically pushes the trust bundle to a ConfigMap so agents and
+      # workloads can bootstrap trust without manual bundle distribution.
       Notifier "k8sbundle" {
         plugin_data {
           namespace = "spire"
           config_map = "spire-bundle"
         }
       }
+
+      # PRODUCTION: Add an UpstreamAuthority to chain SPIRE's CA to your
+      # organizational PKI rather than using a self-signed root.
+      #
+      # Examples:
+      #   UpstreamAuthority "disk" {
+      #     plugin_data {
+      #       cert_file_path = "/run/spire/upstream/ca.crt"
+      #       key_file_path  = "/run/spire/upstream/ca.key"
+      #     }
+      #   }
+      #
+      #   UpstreamAuthority "vault" {
+      #     plugin_data {
+      #       vault_addr  = "https://vault.example.com:8200"
+      #       pki_mount_point = "pki_int"
+      #       ...
+      #     }
+      #   }
     }
 
     health_checks {
@@ -149,6 +226,8 @@ metadata:
     app.kubernetes.io/part-of: spiffe
     app.kubernetes.io/managed-by: platform-team
 spec:
+  # CHANGE FOR PRODUCTION: Use multiple replicas with PostgreSQL datastore
+  # and leader election. SQLite does not support multi-replica.
   replicas: 1
   serviceName: spire-server
   selector:
@@ -171,6 +250,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: spire-server
+          # CHANGE: Pin to your tested version. Check for CVEs before deploying.
           image: ghcr.io/spiffe/spire-server:1.9.6
           args:
             - "-config"
@@ -188,6 +268,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # CHANGE: Right-size based on workload count and attestation volume.
           resources:
             requests:
               cpu: 100m
@@ -225,6 +306,7 @@ spec:
           app.kubernetes.io/component: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        # CHANGE: Size based on expected registration entry count and key material.
         resources:
           requests:
             storage: 1Gi
@@ -249,7 +331,9 @@ spec:
     app.kubernetes.io/name: spire-server
     app.kubernetes.io/component: server
 ---
-# ConfigMap to hold the SPIRE trust bundle — auto-populated by the k8sbundle notifier
+# Trust bundle ConfigMap -- auto-populated by the k8sbundle notifier plugin.
+# Do not manually edit this ConfigMap; the SPIRE Server manages its contents.
+# Agents and workloads read from this to bootstrap trust.
 apiVersion: v1
 kind: ConfigMap
 metadata:

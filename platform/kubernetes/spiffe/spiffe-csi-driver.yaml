@@ -1,8 +1,22 @@
-# SPIFFE CSI Driver — DaemonSet
+# =============================================================================
+# SPIFFE CSI Driver -- Reference Example
+# =============================================================================
 # Provides a CSI ephemeral volume that exposes the SPIRE Workload API socket
-# to workload pods. This is the recommended method for workloads to obtain SVIDs
-# without mounting hostPath volumes directly.
-# Requires: SPIRE Agent running on each node.
+# to workload pods. This is the recommended method for workloads to obtain
+# SVIDs -- it avoids mounting hostPath volumes directly in application pods.
+#
+# This manifest deploys:
+#   - ServiceAccount
+#   - CSIDriver registration
+#   - DaemonSet (CSI driver + node-driver-registrar sidecar)
+#
+# Prerequisites:
+#   - SPIRE Agent running on each node (spire-agent.yaml)
+#   - Agent socket available at /run/spire/sockets/agent.sock on each node
+#
+# This manifest is generally usable as-is. The only values to review are
+# the image tags and resource limits.
+# =============================================================================
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -23,14 +37,17 @@ metadata:
     app.kubernetes.io/component: csi-driver
     app.kubernetes.io/part-of: spiffe
 spec:
-  # Ephemeral volumes only — no persistent volume support
+  # Ephemeral volumes only -- no persistent volume support needed.
+  # Workloads request the volume inline in their pod spec.
   volumeLifecycleModes:
     - Ephemeral
-  # No need for pod info; SPIRE Agent handles attestation
+  # Pod info is not passed to the driver; SPIRE Agent handles attestation
+  # independently via the Workload API socket caller's PID.
   podInfoOnMount: false
-  # No filesystem group policy needed
+  # No filesystem group policy needed -- the socket permissions are managed
+  # by the SPIRE Agent.
   fsGroupPolicy: None
-  # No attachment needed for ephemeral inline volumes
+  # No attach step needed for ephemeral inline volumes.
   attachRequired: false
 ---
 apiVersion: apps/v1
@@ -58,6 +75,7 @@ spec:
 
       containers:
         - name: spiffe-csi-driver
+          # CHANGE: Pin to your tested version.
           image: ghcr.io/spiffe/spiffe-csi-driver:0.2.6
           args:
             - "-workload-api-socket-dir"
@@ -65,7 +83,8 @@ spec:
             - "-csi-socket-path"
             - "/spiffe-csi/csi.sock"
           securityContext:
-            # CSI driver requires privileged to manage volumes
+            # CSI driver requires privileged to create and manage volumes
+            # on behalf of kubelet. This is inherent to CSI node plugins.
             privileged: true
           resources:
             requests:
@@ -75,19 +94,21 @@ spec:
               cpu: 50m
               memory: 64Mi
           volumeMounts:
-            # SPIRE Agent workload API socket
+            # SPIRE Agent workload API socket directory
             - name: spire-agent-socket
               mountPath: /spire-agent-socket
               readOnly: true
-            # CSI driver socket — kubelet communicates here
+            # CSI driver socket -- kubelet communicates with the driver here
             - name: spiffe-csi-socket
               mountPath: /spiffe-csi
-            # Mount propagation point for pod volumes
+            # Pod volume mount point -- Bidirectional propagation allows the
+            # driver to expose the SPIRE socket into workload pod volumes
             - name: mountpoint-dir
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
 
-        # CSI node driver registrar — registers the driver with kubelet
+        # CSI node driver registrar -- registers the CSI driver with kubelet
+        # so that pods can request csi.spiffe.io volumes.
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.1
           args:
@@ -114,18 +135,22 @@ spec:
               mountPath: /registration
 
       volumes:
+        # SPIRE Agent socket directory on the host
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets
             type: DirectoryOrCreate
+        # CSI driver plugin directory
         - name: spiffe-csi-socket
           hostPath:
             path: /var/lib/kubelet/plugins/csi.spiffe.io
             type: DirectoryOrCreate
+        # Pod volumes directory -- used for mount propagation
         - name: mountpoint-dir
           hostPath:
             path: /var/lib/kubelet/pods
             type: Directory
+        # Kubelet plugin registration directory
         - name: registration-dir
           hostPath:
             path: /var/lib/kubelet/plugins_registry

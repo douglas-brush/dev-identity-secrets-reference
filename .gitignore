@@ -89,6 +89,9 @@ terraform.rc
 *.tfvars
 !*.tfvars.example
 
+# === Logs & Reports ===
+logs/
+
 # === Build & Output ===
 tmp/
 out/
