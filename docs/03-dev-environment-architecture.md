@@ -9,7 +9,7 @@ The dev environment model must assume:
 - preview and test workloads will spin up and down constantly
 - tokens will be requested often
 - secrets will be copied unless the workflow prevents it
-- local laptops, devcontainers, CI runners, and shared clusters all represent different risk levels
+- local laptops, remote dev environments, CI runners, and shared clusters all represent different risk levels
 
 The correct response is not to ban access. The correct response is to **centralize issuance, shorten lifetime, and standardize delivery**.
 
@@ -89,61 +89,61 @@ Remote dev is where teams accidentally recreate server-to-server trust as if it 
 
 ---
 
-## 4. Kubernetes development cluster pattern
+## 4. Container orchestration cluster pattern
 
-Kubernetes is where centralized secret and certificate delivery becomes operationally important.
+Container orchestration platforms are where centralized secret and certificate delivery becomes operationally important. The patterns below are platform-agnostic — implement them using whatever orchestrator and tooling your platform provides.
 
 ### Use three patterns deliberately
 
-#### A. External Secrets Operator
+#### A. External secrets sync
 Use when:
-- the application expects a Kubernetes Secret
-- you need native secret references for env vars or existing charts
-- operator convenience is more important than avoiding Secret objects entirely
+- the application expects native platform secrets
+- you need native secret references for env vars or existing packaging
+- operator convenience is more important than avoiding secret objects entirely
 
 Strength:
 - easy fit for many applications
 
 Tradeoff:
-- secret material exists in Kubernetes Secret objects
+- secret material exists in platform-native secret objects
 
-#### B. Secrets Store CSI Driver
+#### B. Volume-mount secret driver
 Use when:
-- secrets should be mounted directly into the pod filesystem
+- secrets should be mounted directly into the workload filesystem
 - file-based secret delivery is acceptable
-- you want to reduce Secret object sprawl
+- you want to reduce secret object sprawl
 
 Strength:
-- fewer durable Secret objects
+- fewer durable secret objects
 - works well for high-sensitivity mounted secrets
 
 Tradeoff:
 - applications must read from files or sync-to-secret must be configured intentionally
 
-#### C. cert-manager + cert-manager CSI
+#### C. Certificate lifecycle manager
 Use when:
-- each pod should get its own key pair and certificate
+- each workload should get its own key pair and certificate
 - mTLS is required
-- you want certificate lifecycle tied to pod lifecycle
+- you want certificate lifecycle tied to workload lifecycle
 
 Strength:
-- ephemeral pod identity
+- ephemeral workload identity
 - avoids shared key/cert reuse
 
 Tradeoff:
 - needs clear CA and issuer design
 
-### Additional Kubernetes notes
+### Additional orchestration notes
 - Use dedicated service accounts per app.
-- Bind each service account to the least-privileged Vault/secret role.
-- Separate dev, stage, and prod namespaces and stores.
-- Avoid cluster-wide secret stores unless there is a compelling platform reason.
+- Bind each service account to the least-privileged secret role.
+- Separate dev, stage, and prod namespaces or trust boundaries and stores.
+- Avoid cluster-wide or global secret stores unless there is a compelling platform reason.
 
 ---
 
 ## 5. VM and bare compute pattern
 
-Development is not always Kubernetes. Some workloads and admin paths still live on VMs.
+Not all workloads run in container orchestrators. Some workloads and admin paths still live on VMs.
 
 ### Recommended pattern
 - bootstrap the VM using cloud-native identity or a trusted initial bootstrap token
@@ -230,9 +230,9 @@ Treat credentials as categories with separate handling rules.
 |---|---|---:|---|---|
 | Human admin session | IdP / PIM | Minutes to hours | Browser / CLI SSO | Must be attributable |
 | CI cloud auth | OIDC federation | Minutes | Token exchange | No stored cloud keys |
-| Database creds | Vault dynamic secrets | Minutes to hours | API / CSI / agent | Prefer generated credentials |
-| App API secret | Secret manager / Vault KV | Rotated by policy | ESO / CSI / agent | Only when dynamic is impossible |
-| Workload mTLS cert | PKI / cert-manager | Hours to days | cert-manager / CSI | Tie to workload identity |
+| Database creds | Vault dynamic secrets | Minutes to hours | API / mount / agent | Prefer generated credentials |
+| App API secret | Secret manager / Vault KV | Rotated by policy | sync / mount / agent | Only when dynamic is impossible |
+| Workload mTLS cert | PKI / cert lifecycle mgr | Hours to days | cert manager / mount | Tie to workload identity |
 | SSH admin access | SSH CA / broker | Minutes to hours | Signed cert or broker | Avoid static user keys |
 | Repo secret encryption | SOPS + KMS | Persistent master key | Git encrypted file | Environment-specific recipients |
 
@@ -245,7 +245,7 @@ Treat credentials as categories with separate handling rules.
 - CI uses OIDC, not stored cloud secrets
 - at least one application gets runtime secrets from a central broker
 - at least one workload gets short-lived DB credentials
-- at least one Kubernetes workload gets a certificate through cert-manager or equivalent
+- at least one container workload gets a certificate through a certificate lifecycle manager or equivalent
 - SSH admin access is no longer based on one person’s static key
 
 ### What MVP does not require

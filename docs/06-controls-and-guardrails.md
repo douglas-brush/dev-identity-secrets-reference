@@ -82,7 +82,7 @@ Every human admin path must be:
 
 | Pattern | Use When | Avoid When |
 |---|---|---|
-| External Secrets | app expects Kubernetes Secrets or env vars | you want to avoid durable Secret objects |
-| Secrets Store CSI | mounted files are acceptable and sensitivity is higher | app can only read env vars and cannot adapt |
-| Vault Agent | templating, renewal, and lease handling matter | app team cannot support sidecar or file template model |
-| cert-manager CSI | pod identity certificates are needed | workload has no TLS/cert need |
+| External secrets sync | app expects platform-native secrets or env vars | you want to avoid durable secret objects |
+| Volume-mount driver | mounted files are acceptable and sensitivity is higher | app can only read env vars and cannot adapt |
+| Secrets agent sidecar | templating, renewal, and lease handling matter | app team cannot support sidecar or file template model |
+| Certificate lifecycle driver | workload identity certificates are needed | workload has no TLS/cert need |

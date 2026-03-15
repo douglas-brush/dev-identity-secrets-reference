@@ -29,12 +29,12 @@ Default recommendation:
 Status:
 - open
 
-### DEC-003 — Kubernetes secret delivery pattern
+### DEC-003 — Runtime secret delivery pattern
 Options:
-- External Secrets only
-- CSI only
+- external secrets sync only
+- volume-mount driver only
 - mixed model
-- Vault Agent sidecars for specific apps
+- secrets agent sidecars for specific apps
 
 Default recommendation:
 - mixed model

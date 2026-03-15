@@ -13,9 +13,9 @@
 2. create service account
 3. define secret path and policy
 4. choose delivery method:
-   - External Secrets
-   - CSI
-   - Vault Agent
+   - external secrets sync
+   - volume-mount driver
+   - secrets agent sidecar
 5. define certificate need
 6. test rotation, restart, and revocation behavior
 

@@ -22,8 +22,8 @@ Deliver a first working security control plane for development and platform oper
    - zero long-lived deployment credentials stored in repo settings
 
 4. **Runtime secret delivery**
-   - one Kubernetes app using External Secrets or CSI
-   - one VM or service using Vault Agent or equivalent runtime retrieval
+   - one container workload using external secrets sync or volume-mount delivery
+   - one VM or service using an agent-based or equivalent runtime retrieval
 
 5. **Dynamic credentials**
    - one database role using dynamic credentials
@@ -58,14 +58,14 @@ Deliver a first working security control plane for development and platform oper
 - test end-to-end on a non-production repo
 
 ### Sprint 2 — runtime secret pilot
-- choose one Kubernetes app
+- choose one container workload
 - choose one secret delivery method
 - issue least-privileged policy
 - validate rotation and revocation behavior
 
 ### Sprint 3 — dynamic credentials and certificates
 - enable dynamic DB credentials
-- issue workload certificates through cert-manager or equivalent
+- issue workload certificates through a certificate lifecycle manager or equivalent
 - validate lease behavior and app restart behavior
 
 ### Sprint 4 — admin access modernization

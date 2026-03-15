@@ -19,11 +19,11 @@
 - As a security lead, I can restrict CI access by repository, branch, environment, and workflow.
 - As a release engineer, I can run deployments without maintaining static tokens.
 
-## Kubernetes and runtime
+## Runtime workloads
 
 - As an application, I can receive secrets from a central secret store without hardcoding credentials.
 - As an application, I can receive a certificate and private key under lifecycle control.
-- As a cluster operator, I can choose secret delivery by use case: operator sync, CSI mount, or sidecar/agent.
+- As a platform operator, I can choose secret delivery by use case: external sync, volume mount, or sidecar/agent.
 - As a platform owner, I can enforce one service account per app and one role per trust boundary.
 
 ## VMs and administrative operations

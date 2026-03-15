@@ -655,7 +655,6 @@ expected_dirs=(
   "examples"
   "platform/vault/config"
   "platform/vault/policies"
-  "platform/kubernetes"
   "secrets"
   "tests"
   "tools"

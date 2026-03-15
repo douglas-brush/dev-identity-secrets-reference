@@ -12,15 +12,15 @@ Recommended stack:
 - Intune
 - Microsoft Cloud PKI for Intune-managed devices, preferably in BYOCA mode if you want a unified private trust hierarchy
 - Vault for dynamic credentials, SSH CA, Transit, and runtime brokering
-- SOPS + Azure Key Vault / Managed HSM
-- GitHub OIDC to Azure and/or Vault
-- Kubernetes secret delivery via External Secrets / CSI as needed
+- SOPS + managed KMS / HSM
+- GitHub OIDC to cloud IAM and/or Vault
+- runtime secret delivery via external sync / volume-mount as needed
 
 ## Pattern B — Multi-cloud platform team
 
 Use when:
 - workloads span AWS/Azure/GCP
-- Kubernetes and VMs both matter
+- container orchestrators and VMs both matter
 - the secret and credential model must stay portable
 
 Recommended stack:
@@ -28,8 +28,8 @@ Recommended stack:
 - Vault
 - SOPS + cloud-specific KMS by environment
 - GitHub OIDC to target cloud and Vault
-- cert-manager + Vault or enterprise CA
-- Secrets Store CSI and External Secrets
+- certificate lifecycle manager + Vault or enterprise CA
+- volume-mount driver and external secrets sync
 - optional SPIFFE/SPIRE later for workload identity maturity
 
 ## Pattern C — Leaner implementation
@@ -42,10 +42,10 @@ Use when:
 Recommended stack:
 - IdP + MDM
 - cloud secret manager
-- cloud KMS / Key Vault / Cloud KMS
+- managed KMS
 - SOPS
 - GitHub OIDC
-- External Secrets or CSI
+- external secrets sync or volume-mount driver
 - private CA provider for certificates
 
 Note:

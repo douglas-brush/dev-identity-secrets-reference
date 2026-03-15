@@ -1,6 +1,6 @@
 # Validates code quality on every push and PR.
-# Checks YAML syntax, Terraform format, shell scripts, OPA policies,
-# and Kubernetes manifests.
+# Checks YAML syntax, shell scripts, OPA policies, and optionally
+# Terraform format and manifest validation when those files exist.
 
 name: Validate
 

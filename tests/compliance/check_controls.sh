@@ -274,7 +274,7 @@ check_c6() {
   fi
 
   # C6.3: Vault Agent configuration
-  if [[ -f platform/vault/config/vault-agent-k8s.hcl ]] || [[ -f platform/vault/config/vault-agent-vm.hcl ]]; then
+  if [[ -f platform/vault/config/vault-agent-vm.hcl ]] || find . -name "vault-agent*.hcl" -not -path '*/.git/*' 2>/dev/null | grep -q .; then
     check "C6.3" "Vault Agent sidecar/VM configuration" "PASS"
   else
     check "C6.3" "Vault Agent sidecar/VM configuration" "FAIL"

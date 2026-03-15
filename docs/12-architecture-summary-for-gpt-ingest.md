@@ -11,7 +11,7 @@ Provide a reusable reference architecture for centralized identity, PKI, secrets
 - Secrets and dynamic credentials are issued from a central broker.
 - Repository-stored secrets are encrypted with SOPS and master keys from centralized KMS.
 - CI authenticates using OIDC federation, not stored secrets.
-- Kubernetes retrieves secrets using operator sync or CSI, depending on sensitivity and application design.
+- Container workloads retrieve secrets using external sync or volume-mount patterns, depending on sensitivity and application design.
 - Certificates are centrally issued through a private PKI path and delivered with lifecycle control.
 - SSH access is short-lived and centrally revocable.
 

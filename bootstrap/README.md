@@ -10,7 +10,7 @@ Developer workstation and environment bootstrap automation.
 | `check_no_plaintext_secrets.sh` | Enhanced secret scanner with 15+ pattern types |
 | `vault_login_oidc.sh` | Vault OIDC authentication with token validation and renewal |
 | `fetch_dev_env.sh` | Retrieve development secrets from Vault to temporary files |
-| `onboard_app.sh` | Automate application onboarding: Vault policy, K8s SA, secret delivery |
+| `onboard_app.sh` | Automate application onboarding: Vault policy + platform-specific secret delivery (K8s, ECS, Lambda) |
 
 ## Quick Start
 
@@ -25,8 +25,14 @@ export VAULT_ADDR=https://vault.example.internal
 # Fetch secrets for current project
 ./bootstrap/scripts/fetch_dev_env.sh my-app dev
 
-# Onboard a new application
-./bootstrap/scripts/onboard_app.sh my-api dev --delivery eso --cert --db-role
+# Onboard a new application (Vault policy only)
+./bootstrap/scripts/onboard_app.sh my-api dev
+
+# Onboard with Kubernetes secret delivery
+./bootstrap/scripts/onboard_app.sh my-api dev --platform k8s --delivery eso --cert --db-role
+
+# Onboard with ECS secret delivery
+./bootstrap/scripts/onboard_app.sh my-api dev --platform ecs --delivery env
 ```
 
 ## Security Notes

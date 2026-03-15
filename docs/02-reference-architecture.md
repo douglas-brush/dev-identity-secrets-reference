@@ -7,13 +7,13 @@ The recommended model for dev and platform security is a **brokered trust archit
 1. **Human identity** starts at the IdP.
 2. **Device trust** is reinforced by MDM and posture.
 3. **Central secret and credential brokerage** is handled by Vault and/or cloud secret services.
-4. **Master cryptographic authority** is handled by cloud KMS / Key Vault / Cloud KMS and, where needed, HSM-backed services.
+4. **Master cryptographic authority** is handled by managed KMS and, where needed, HSM-backed services.
 5. **Certificate issuance** is centralized through a private PKI workflow.
 6. **Runtime delivery** uses purpose-specific patterns:
    - SOPS for Git-stored configuration secrets
    - OIDC federation for CI
-   - External Secrets or CSI for Kubernetes
-   - Vault Agent or cloud-native identity for VMs
+   - external secrets sync or volume-mount patterns for container orchestrators
+   - agent-based or cloud-native identity patterns for VMs
    - short-lived SSH certificates or brokered admin access for human operations
 
 ## Architecture planes
@@ -34,7 +34,7 @@ The crypto and secrets plane answers: **what secret, credential, key, or certifi
 
 Components:
 - Vault and/or cloud secret manager
-- cloud KMS / Azure Key Vault / Google Cloud KMS
+- managed KMS
 - SOPS for repository encryption
 - PKI provider / certificate authority
 - optional Transit / encryption-as-a-service
@@ -45,10 +45,10 @@ The runtime delivery plane answers: **how does a workload or tool receive what i
 
 Components:
 - GitHub OIDC or equivalent
-- External Secrets Operator
-- Secrets Store CSI Driver
-- cert-manager and cert-manager CSI driver
-- Vault Agent
+- external secrets sync operator (platform-appropriate)
+- secrets volume-mount driver (platform-appropriate)
+- certificate lifecycle manager
+- Vault Agent or equivalent secrets agent
 - SSH CA / access broker
 - cloud-native control-plane access for admin sessions
 
@@ -85,12 +85,12 @@ Choose one:
 - cloud native secret service is authoritative
 - hybrid model where Vault brokers dynamic secrets and cloud secret service stores static unavoidable secrets
 
-### Decision 2: Kubernetes delivery method
+### Decision 2: Runtime secret delivery method
 Choose by use case:
-- **External Secrets** when the application expects Kubernetes Secrets and operational convenience matters
-- **Secrets Store CSI** when direct mount to filesystem is preferable and you want to reduce Secret object proliferation
-- **Vault Agent** when sidecar templating and lease renewal is the better model
-- **cert-manager CSI** for ephemeral pod certificate/key pairs
+- **External secrets sync** when the application expects native platform secrets and operational convenience matters
+- **Volume-mount driver** when direct mount to filesystem is preferable and you want to reduce secret object proliferation
+- **Secrets agent sidecar** when templating and lease renewal is the better model
+- **Certificate lifecycle driver** for ephemeral workload certificate/key pairs
 
 ### Decision 3: developer auth and local secret retrieval
 Choose one or combine:
@@ -111,10 +111,10 @@ For most hybrid organizations, the strongest pattern is:
 - **Entra/Okta** for human identity
 - **Intune** for device management if using Microsoft endpoints
 - **Vault** as central broker for dynamic credentials, SSH, Transit, and optionally PKI
-- **Cloud KMS / Key Vault / Cloud KMS** as master key authorities and SOPS recipients
+- **Managed KMS** as master key authority and SOPS recipient
 - **GitHub OIDC** for CI federation
-- **External Secrets + CSI** in Kubernetes depending on sensitivity and application design
-- **cert-manager** for certificates inside clusters
+- **External secrets sync + volume-mount patterns** in container platforms depending on sensitivity and application design
+- **Certificate lifecycle manager** for workload certificates
 - **Private CA provider** for organizational certificate hierarchy
 
 ## Core non-negotiables

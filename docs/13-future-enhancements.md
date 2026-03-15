@@ -3,7 +3,7 @@
 These are deliberately outside the first iteration but are logical next steps.
 
 - artifact signing using centralized keys
-- SPIFFE / SPIRE production rollout (reference manifests available in `platform/kubernetes/spiffe/` — production hardening per the checklist in that directory's README is a future step)
+- SPIFFE / SPIRE production rollout for workload identity
 - service mesh integration for mTLS policy
 - automated certificate inventory and expiry reporting
 - broader PAM / JIT elevation integration

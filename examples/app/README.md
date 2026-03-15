@@ -5,16 +5,16 @@ How to onboard a new application to the Dev Identity & Secrets platform.
 ## Prerequisites
 
 - Vault access with `developer-read` policy (or higher)
-- `kubectl` access to the target namespace
+- CLI access to the target platform namespace
 - SOPS + age configured for encrypted config files
 
 ## Step 1: Run the Onboarding Script
 
 ```bash
-# ExternalSecrets Operator delivery (recommended for most apps)
+# External secrets sync delivery (recommended for most apps)
 ./bootstrap/scripts/onboard_app.sh my-api dev --delivery eso --cert --db-role
 
-# CSI driver delivery (for volume-mounted secrets)
+# Volume-mount delivery (for file-based secrets)
 ./bootstrap/scripts/onboard_app.sh my-api dev --delivery csi
 
 # Preview what would be created
@@ -23,47 +23,23 @@ How to onboard a new application to the Dev Identity & Secrets platform.
 
 This creates:
 - Vault policy scoped to `kv/data/dev/apps/my-api/*`
-- Kubernetes ServiceAccount with `automountServiceAccountToken: false`
-- Secret delivery resource (ExternalSecret, SecretProviderClass, or Agent annotations)
-- Optional: cert-manager Certificate for mTLS
+- Platform service account
+- Secret delivery resource (sync rule, mount class, or agent annotations)
+- Optional: workload certificate for mTLS
 
-## Step 2: Choose a Deployment Pattern
+## Step 2: Choose a Delivery Pattern
 
-### ExternalSecrets Operator (ESO)
+### External secrets sync
 
-Secrets are synced from Vault to native Kubernetes Secrets, then consumed via `envFrom`:
+Secrets are synced from the central broker to platform-native secrets, then consumed via environment variables or secret references. Configure the sync rule to target the correct secret path and refresh interval.
 
-```yaml
-envFrom:
-  - secretRef:
-      name: my-api-config
-```
+### Volume-mount driver
 
-See `deployment-with-externalsecrets.yaml` for the full example.
+Secrets are mounted as files directly into workloads. Configure the mount class to target the correct secret path and provider.
 
-### CSI Secrets Store
+### Secrets agent sidecar
 
-Secrets are mounted as files directly into pods:
-
-```yaml
-volumeMounts:
-  - name: secrets-store
-    mountPath: /vault/secrets
-    readOnly: true
-```
-
-See `deployment-with-csi.yaml` for the full example.
-
-### Vault Agent Sidecar
-
-Add annotations to your Deployment for automatic Vault Agent injection:
-
-```yaml
-annotations:
-  vault.hashicorp.com/agent-inject: "true"
-  vault.hashicorp.com/role: "my-api"
-  vault.hashicorp.com/agent-inject-secret-config: "kv/data/dev/apps/my-api/config"
-```
+Use agent annotations or configuration to inject a sidecar that retrieves and templates secrets from the central broker at runtime.
 
 ## Step 3: Encrypted Config Files
 
@@ -79,12 +55,9 @@ EOF
 # Encrypt with SOPS
 sops -e values.yaml > values.enc.yaml
 rm values.yaml
-
-# Deploy with helm-secrets
-helm secrets upgrade my-api ./chart -f values.enc.yaml
 ```
 
-See `values.enc.yaml.example` for the encrypted file structure.
+Use the encrypted file with your deployment tooling (e.g., `sops -d values.enc.yaml | your-deploy-tool`).
 
 ## Step 4: Dynamic Database Credentials
 
@@ -94,11 +67,10 @@ Your application should handle credential rotation gracefully by re-reading the 
 
 ## Security Checklist
 
-- [ ] ServiceAccount has `automountServiceAccountToken: false`
-- [ ] Pod runs as non-root (`runAsNonRoot: true`)
-- [ ] Root filesystem is read-only (`readOnlyRootFilesystem: true`)
-- [ ] All capabilities dropped (`drop: [ALL]`)
+- [ ] Service account follows least-privilege principles
+- [ ] Workload runs as non-root where possible
+- [ ] Filesystem is read-only where possible
 - [ ] Resource limits are set
 - [ ] No secrets in container image or environment variable defaults
-- [ ] Health checks configured (liveness + readiness)
-- [ ] Prometheus metrics exposed for monitoring
+- [ ] Health checks configured
+- [ ] Monitoring and observability enabled

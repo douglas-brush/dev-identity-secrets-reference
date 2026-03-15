@@ -19,8 +19,8 @@ Sensitive values (tokens, secrets) are HMAC'd in audit logs by default — they 
 |---------|------|----------|
 | Vault audit device to Splunk | `vault-audit-to-splunk.hcl` | Direct syslog or file-based forwarding to Splunk |
 | Vault audit device to ELK | `vault-audit-to-elk.hcl` | File audit device with Logstash/Filebeat pipeline |
-| FluentBit sidecar (Kubernetes) | `fluentbit-vault-audit.yaml` | Kubernetes-native log tailing with FluentBit DaemonSet |
-| Prometheus/Alertmanager rules | `alert-rules.yaml` | Alerting on secrets-related anomalies |
+| FluentBit sidecar | (implement per platform) | Log tailing with FluentBit for container or VM workloads |
+| Alerting rules | (implement per platform) | Alerting on secrets-related anomalies via Prometheus/Alertmanager or equivalent |
 
 ## Deployment Models
 
@@ -64,7 +64,7 @@ Best for: High-throughput environments, custom parsing pipelines.
 
 ## Alert Rules
 
-The `alert-rules.yaml` file provides Prometheus/Alertmanager rules for:
+Recommended alerting rules should cover:
 
 - Failed authentication attempts (brute force detection)
 - Secret access anomalies (unusual read patterns)
