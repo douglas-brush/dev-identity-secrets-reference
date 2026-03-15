@@ -1,0 +1,162 @@
+#cloud-config
+# Cloud-init configuration for VMs with Vault Agent secret delivery.
+# Installs Vault Agent, configures AppRole auth, and sets up systemd service.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - jq
+  - curl
+  - unzip
+
+write_files:
+  # Vault Agent configuration
+  - path: /etc/vault-agent/vault-agent.hcl
+    owner: vault:vault
+    permissions: "0640"
+    content: |
+      auto_auth {
+        method "approle" {
+          mount_path = "auth/approle"
+          config = {
+            role_id_file_path                   = "/etc/vault-agent/role-id"
+            secret_id_file_path                 = "/etc/vault-agent/secret-id"
+            remove_secret_id_file_after_reading = true
+          }
+        }
+
+        sink "file" {
+          config = {
+            path = "/run/vault/.vault-token"
+            mode = 0600
+          }
+        }
+      }
+
+      cache {
+        use_auto_auth_token = true
+      }
+
+      template {
+        source      = "/etc/vault-agent/templates/app-secrets.ctmpl"
+        destination = "/run/app/secrets.env"
+        perms       = "0600"
+        command     = "systemctl reload app.service 2>/dev/null || true"
+
+        error_on_missing_key = true
+
+        wait {
+          min = "5s"
+          max = "30s"
+        }
+      }
+
+      template {
+        source      = "/etc/vault-agent/templates/db-creds.ctmpl"
+        destination = "/run/app/db.env"
+        perms       = "0600"
+      }
+
+  # App secrets template
+  - path: /etc/vault-agent/templates/app-secrets.ctmpl
+    owner: vault:vault
+    permissions: "0640"
+    content: |
+      {{ with secret "kv/data/dev/apps/demo-app/config" }}
+      {{ range $key, $value := .Data.data }}
+      export {{ $key }}='{{ $value }}'
+      {{ end }}
+      {{ end }}
+
+  # Database credentials template
+  - path: /etc/vault-agent/templates/db-creds.ctmpl
+    owner: vault:vault
+    permissions: "0640"
+    content: |
+      {{ with secret "database/creds/dev-demo-app" }}
+      export DB_USERNAME='{{ .Data.username }}'
+      export DB_PASSWORD='{{ .Data.password }}'
+      # Lease: {{ .LeaseID }} (TTL: {{ .LeaseDuration }}s)
+      {{ end }}
+
+  # Systemd service for Vault Agent
+  - path: /etc/systemd/system/vault-agent.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=HashiCorp Vault Agent
+      Documentation=https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/etc/vault-agent/vault-agent.hcl
+
+      [Service]
+      Type=simple
+      User=vault
+      Group=vault
+      ExecStart=/usr/local/bin/vault agent -config=/etc/vault-agent/vault-agent.hcl
+      ExecReload=/bin/kill -HUP $MAINPID
+      Restart=on-failure
+      RestartSec=5
+      LimitNOFILE=65536
+      KillMode=process
+      KillSignal=SIGINT
+
+      # Security hardening
+      NoNewPrivileges=yes
+      PrivateTmp=yes
+      ProtectSystem=strict
+      ProtectHome=yes
+      ReadWritePaths=/run/vault /run/app /etc/vault-agent
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Vault environment
+  - path: /etc/vault-agent/vault-env
+    owner: vault:vault
+    permissions: "0640"
+    content: |
+      VAULT_ADDR=https://vault.example.internal:8200
+
+groups:
+  - vault
+
+users:
+  - name: vault
+    system: true
+    shell: /usr/sbin/nologin
+    groups: [vault]
+    no_create_home: true
+
+runcmd:
+  # Install Vault
+  - |
+    VAULT_VERSION="1.15.4"
+    ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+    curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${ARCH}.zip" -o /tmp/vault.zip
+    unzip -o /tmp/vault.zip -d /usr/local/bin/
+    chmod +x /usr/local/bin/vault
+    rm -f /tmp/vault.zip
+
+  # Create runtime directories
+  - mkdir -p /run/vault /run/app /etc/vault-agent/templates
+  - chown -R vault:vault /run/vault /run/app /etc/vault-agent
+
+  # The role-id and secret-id must be provisioned securely.
+  # Options:
+  #   1. Bake role-id into AMI, deliver secret-id via instance metadata
+  #   2. Use cloud auto-join with AWS/GCP/Azure auth instead of AppRole
+  #   3. Deliver both via secure provisioning pipeline (e.g., Terraform)
+  #
+  # Example (replace with actual values from your provisioning pipeline):
+  # - echo "ROLE_ID_HERE" > /etc/vault-agent/role-id
+  # - echo "SECRET_ID_HERE" > /etc/vault-agent/secret-id
+  # - chown vault:vault /etc/vault-agent/role-id /etc/vault-agent/secret-id
+  # - chmod 0400 /etc/vault-agent/role-id /etc/vault-agent/secret-id
+
+  # Enable and start Vault Agent
+  - systemctl daemon-reload
+  - systemctl enable vault-agent.service
+  # - systemctl start vault-agent.service  # Uncomment after provisioning credentials

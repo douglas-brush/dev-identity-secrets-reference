@@ -1,0 +1,43 @@
+# Runtime Secret Delivery Patterns
+
+```mermaid
+flowchart LR
+
+  subgraph STORE["Central Secret / Credential Sources"]
+    KV[Static Secrets Store]
+    DYN[Dynamic Secrets Engine]
+    PKI[PKI / Certificate Issuer]
+  end
+
+  subgraph K8S["Kubernetes"]
+    SA[Service Account]
+    ESO[External Secrets Operator]
+    CSI[Secrets Store CSI]
+    CM[cert-manager]
+    CMCSI[cert-manager CSI]
+    POD[Pod / App Container]
+  end
+
+  subgraph VM["VM / Host"]
+    AGENT[Vault Agent / Runtime Fetcher]
+    PROC[Application Process]
+  end
+
+  SA --> ESO
+  SA --> CSI
+  SA --> CM
+
+  KV --> ESO
+  DYN --> CSI
+  PKI --> CM
+  CM --> CMCSI
+
+  ESO --> POD
+  CSI --> POD
+  CMCSI --> POD
+
+  KV --> AGENT
+  DYN --> AGENT
+  PKI --> AGENT
+  AGENT --> PROC
+```

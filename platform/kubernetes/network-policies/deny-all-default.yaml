@@ -1,0 +1,58 @@
+# Default Deny-All Network Policy
+# Apply to every namespace to enforce zero-trust networking.
+# All traffic is blocked unless explicitly allowed by other NetworkPolicy resources.
+# This is the foundational network policy — apply before any allow rules.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  # Apply per-namespace — use Kyverno or a controller to auto-generate
+  namespace: my-app
+  labels:
+    app.kubernetes.io/name: default-deny-all
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: platform-security
+    app.kubernetes.io/managed-by: platform-team
+  annotations:
+    platform.example.com/description: "Default deny all ingress and egress traffic"
+    platform.example.com/policy-type: "baseline"
+spec:
+  # Select all pods in the namespace
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Empty rules = deny all
+  ingress: []
+  egress: []
+---
+# Allow DNS egress — required for nearly all workloads
+# Without this, pods cannot resolve service names.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: my-app
+  labels:
+    app.kubernetes.io/name: allow-dns-egress
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: platform-security
+    app.kubernetes.io/managed-by: platform-team
+  annotations:
+    platform.example.com/description: "Allow DNS resolution for all pods"
+    platform.example.com/policy-type: "baseline"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

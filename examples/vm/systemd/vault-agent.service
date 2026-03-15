@@ -1,0 +1,45 @@
+[Unit]
+Description=HashiCorp Vault Agent
+Documentation=https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/vault-agent/vault-agent.hcl
+
+[Service]
+Type=simple
+User=vault
+Group=vault
+EnvironmentFile=-/etc/vault-agent/vault-env
+ExecStartPre=/usr/local/bin/vault version
+ExecStart=/usr/local/bin/vault agent -config=/etc/vault-agent/vault-agent.hcl
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+LimitNOFILE=65536
+KillMode=process
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ReadWritePaths=/run/vault /run/app /etc/vault-agent
+CapabilityBoundingSet=
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vault-agent
+
+[Install]
+WantedBy=multi-user.target

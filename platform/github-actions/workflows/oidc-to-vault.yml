@@ -1,0 +1,253 @@
+# Complete example: GitHub Actions OIDC authentication to HashiCorp Vault.
+#
+# Demonstrates:
+# - OIDC token exchange for a Vault token (no static secrets)
+# - Reading KV secrets
+# - Obtaining dynamic database credentials
+# - Signing SSH certificates
+# - Proper error handling and cleanup
+#
+# Prerequisites:
+# - Vault JWT auth backend configured at jwt/github
+# - Vault role bound to this repository's OIDC claims
+# - Appropriate policies attached to the role
+
+name: "Example: OIDC to Vault"
+
+on:
+  workflow_dispatch:
+    inputs:
+      vault_addr:
+        description: Vault URL
+        required: true
+        type: string
+      vault_role:
+        description: Vault JWT auth role
+        required: true
+        type: string
+      vault_namespace:
+        description: Vault namespace (Enterprise only)
+        required: false
+        type: string
+        default: ''
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+permissions:
+  id-token: write    # OIDC token request
+  contents: read
+
+concurrency:
+  group: vault-ops-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Step 1: Authenticate ──────────────────────────────────────────────
+  vault-auth:
+    name: Authenticate to Vault
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    outputs:
+      token: ${{ steps.auth.outputs.token }}
+    steps:
+      - name: Authenticate via OIDC
+        id: auth
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: jwt/github
+          namespace: ${{ inputs.vault_namespace }}
+          exportToken: true
+
+      - name: Verify authentication
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.auth.outputs.token }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        run: |
+          set -euo pipefail
+          TOKEN_INFO=$(vault token lookup -format=json)
+          TTL=$(echo "$TOKEN_INFO" | jq -r '.data.ttl')
+          POLICIES=$(echo "$TOKEN_INFO" | jq -r '.data.policies | join(", ")')
+          echo "::notice::Authenticated — TTL: ${TTL}s, policies: [${POLICIES}]"
+
+  # ── Step 2: Read KV secrets ───────────────────────────────────────────
+  read-secrets:
+    name: Read KV Secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: vault-auth
+    steps:
+      - name: Read application secrets from KV
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: jwt/github
+          namespace: ${{ inputs.vault_namespace }}
+          # Read specific secrets — they become masked env vars
+          secrets: |
+            secret/data/${{ inputs.environment }}/app db_host | DB_HOST ;
+            secret/data/${{ inputs.environment }}/app db_name | DB_NAME ;
+            secret/data/${{ inputs.environment }}/app api_key | API_KEY
+
+      - name: Use secrets (example)
+        run: |
+          set -euo pipefail
+          # Secrets are available as environment variables
+          # They are automatically masked in logs
+          echo "Database host is set: $(if [[ -n "${DB_HOST:-}" ]]; then echo 'yes'; else echo 'no'; fi)"
+          echo "Database name is set: $(if [[ -n "${DB_NAME:-}" ]]; then echo 'yes'; else echo 'no'; fi)"
+          echo "API key is set: $(if [[ -n "${API_KEY:-}" ]]; then echo 'yes'; else echo 'no'; fi)"
+
+  # ── Step 3: Dynamic database credentials ──────────────────────────────
+  dynamic-db-creds:
+    name: Get Dynamic DB Credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: vault-auth
+    steps:
+      - name: Generate dynamic database credentials
+        id: db-creds
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: jwt/github
+          namespace: ${{ inputs.vault_namespace }}
+          secrets: |
+            database/creds/${{ inputs.environment }}-readonly username | DB_USERNAME ;
+            database/creds/${{ inputs.environment }}-readonly password | DB_PASSWORD
+
+      - name: Test database connectivity
+        run: |
+          set -euo pipefail
+          # Dynamic credentials are short-lived and auto-revoked
+          echo "::notice::Dynamic DB credentials obtained (username: ${DB_USERNAME:+set})"
+          echo "These credentials will be automatically revoked when the lease expires."
+
+          # Example: test connectivity
+          # psql "host=${DB_HOST} dbname=${DB_NAME} user=${DB_USERNAME} password=${DB_PASSWORD}" \
+          #   -c "SELECT 1"
+
+  # ── Step 4: SSH certificate signing ───────────────────────────────────
+  ssh-cert:
+    name: Sign SSH Certificate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: vault-auth
+    steps:
+      - name: Generate ephemeral SSH key pair
+        id: keygen
+        run: |
+          set -euo pipefail
+          SSH_DIR=$(mktemp -d)
+          ssh-keygen -t ed25519 -f "${SSH_DIR}/id_ed25519" -N "" -C "github-actions-${GITHUB_RUN_ID}"
+          echo "ssh_dir=${SSH_DIR}" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat "${SSH_DIR}/id_ed25519.pub")" >> "$GITHUB_OUTPUT"
+          echo "::notice::Generated ephemeral ED25519 key pair"
+
+      - name: Sign public key with Vault SSH CA
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: jwt/github
+          namespace: ${{ inputs.vault_namespace }}
+          exportToken: true
+
+      - name: Request certificate
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ env.VAULT_TOKEN }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        run: |
+          set -euo pipefail
+          SSH_DIR="${{ steps.keygen.outputs.ssh_dir }}"
+
+          # Sign the public key using Vault's SSH secrets engine
+          vault write -format=json ssh-client-signer/sign/github-actions \
+            public_key="@${SSH_DIR}/id_ed25519.pub" \
+            valid_principals="deploy" \
+            ttl="300" \
+            > /tmp/signed-cert.json 2>/dev/null || {
+              echo "::warning::SSH certificate signing not configured — skipping"
+              exit 0
+            }
+
+          # Extract and save the signed certificate
+          jq -r '.data.signed_key' /tmp/signed-cert.json > "${SSH_DIR}/id_ed25519-cert.pub"
+          SERIAL=$(ssh-keygen -L -f "${SSH_DIR}/id_ed25519-cert.pub" 2>/dev/null | \
+            grep 'Serial:' | awk '{print $2}' || echo 'unknown')
+          echo "::notice::SSH certificate issued — serial: ${SERIAL}, TTL: 300s"
+
+      - name: Cleanup keys
+        if: always()
+        run: |
+          set -euo pipefail
+          SSH_DIR="${{ steps.keygen.outputs.ssh_dir }}"
+          if [[ -d "$SSH_DIR" ]]; then
+            find "$SSH_DIR" -type f -exec shred -u {} \; 2>/dev/null || \
+            find "$SSH_DIR" -type f -delete
+            rmdir "$SSH_DIR"
+            echo "::notice::Ephemeral SSH keys securely removed"
+          fi
+
+  # ── Step 5: Cleanup ───────────────────────────────────────────────────
+  cleanup:
+    name: Revoke Vault Token
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [vault-auth, read-secrets, dynamic-db-creds, ssh-cert]
+    if: always()
+    steps:
+      - name: Revoke token and leases
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: jwt/github
+          namespace: ${{ inputs.vault_namespace }}
+          exportToken: true
+
+      - name: Self-revoke
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ env.VAULT_TOKEN }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        run: |
+          set -euo pipefail
+          # Revoke the token and all its child tokens/leases
+          vault token revoke -self 2>/dev/null || true
+          echo "::notice::Vault token self-revoked"
+
+      - name: Summary
+        run: |
+          echo "## Vault OIDC Workflow Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Operation | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OIDC Authentication | ${{ needs.vault-auth.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Read KV Secrets | ${{ needs.read-secrets.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dynamic DB Creds | ${{ needs.dynamic-db-creds.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SSH Certificate | ${{ needs.ssh-cert.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Token Cleanup | completed |" >> "$GITHUB_STEP_SUMMARY"

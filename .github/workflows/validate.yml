@@ -1,0 +1,256 @@
+# Validates code quality on every push and PR.
+# Checks YAML syntax, Terraform format, shell scripts, OPA policies,
+# and Kubernetes manifests.
+
+name: Validate
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint YAML files
+        run: |
+          set -euo pipefail
+          # Use a relaxed config if no .yamllint exists
+          if [[ -f .yamllint.yml || -f .yamllint.yaml || -f .yamllint ]]; then
+            yamllint .
+          else
+            yamllint -d '{extends: relaxed, rules: {line-length: {max: 200}}}' \
+              $(find . -name '*.yml' -o -name '*.yaml' | \
+                grep -v node_modules | grep -v vendor | grep -v .git)
+          fi
+
+  terraform-fmt:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: |
+          set -euo pipefail
+          TF_FILES=$(find . -name '*.tf' -not -path '*/.*' -not -path '*/vendor/*' 2>/dev/null || true)
+          if [[ -z "$TF_FILES" ]]; then
+            echo "::notice::No Terraform files found, skipping"
+            exit 0
+          fi
+
+          # Find directories containing .tf files
+          TF_DIRS=$(echo "$TF_FILES" | xargs -I{} dirname {} | sort -u)
+          ERRORS=0
+
+          for dir in $TF_DIRS; do
+            if ! terraform fmt -check -diff "$dir" 2>/dev/null; then
+              ERRORS=$((ERRORS + 1))
+              echo "::error::Terraform formatting issues in ${dir}"
+            fi
+          done
+
+          if [[ "$ERRORS" -gt 0 ]]; then
+            echo "::error::Run 'terraform fmt -recursive' to fix formatting"
+            exit 1
+          fi
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        run: |
+          set -euo pipefail
+          SHELL_FILES=$(find . -type f \( -name '*.sh' -o -name '*.bash' \) \
+            -not -path '*/node_modules/*' \
+            -not -path '*/vendor/*' \
+            -not -path '*/.git/*' 2>/dev/null || true)
+
+          if [[ -z "$SHELL_FILES" ]]; then
+            echo "::notice::No shell scripts found, skipping"
+            exit 0
+          fi
+
+          ERRORS=0
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            echo "Checking: ${file}"
+            if ! shellcheck --severity=warning --format=gcc "$file"; then
+              ERRORS=$((ERRORS + 1))
+            fi
+          done <<< "$SHELL_FILES"
+
+          if [[ "$ERRORS" -gt 0 ]]; then
+            echo "::error::ShellCheck found issues in ${ERRORS} file(s)"
+            exit 1
+          fi
+
+          echo "::notice::All shell scripts passed ShellCheck"
+
+  opa-tests:
+    name: OPA Policy Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OPA
+        run: |
+          set -euo pipefail
+          OPA_VERSION="0.68.0"
+          curl -fsSL -o /tmp/opa \
+            "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static"
+          chmod +x /tmp/opa
+          sudo mv /tmp/opa /usr/local/bin/opa
+          opa version
+
+      - name: Run OPA tests
+        run: |
+          set -euo pipefail
+          POLICY_DIRS=$(find . -name '*.rego' -not -path '*/.git/*' \
+            -exec dirname {} \; 2>/dev/null | sort -u || true)
+
+          if [[ -z "$POLICY_DIRS" ]]; then
+            echo "::notice::No OPA policies found, skipping"
+            exit 0
+          fi
+
+          ERRORS=0
+          for dir in $POLICY_DIRS; do
+            echo "Testing policies in: ${dir}"
+
+            # Check syntax
+            if ! opa check "$dir"/*.rego 2>/dev/null; then
+              echo "::error::OPA syntax error in ${dir}"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+
+            # Run tests if test files exist
+            TEST_FILES=$(find "$dir" -name '*_test.rego' 2>/dev/null || true)
+            if [[ -n "$TEST_FILES" ]]; then
+              if ! opa test "$dir" -v; then
+                ERRORS=$((ERRORS + 1))
+              fi
+            else
+              echo "::notice::No test files in ${dir}, syntax check only"
+            fi
+          done
+
+          if [[ "$ERRORS" -gt 0 ]]; then
+            echo "::error::OPA tests failed in ${ERRORS} director(ies)"
+            exit 1
+          fi
+
+  kubeconform:
+    name: Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          KUBECONFORM_VERSION="0.6.6"
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar xzf /tmp/kubeconform.tar.gz -C /tmp/
+          sudo mv /tmp/kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: Validate Kubernetes manifests
+        run: |
+          set -euo pipefail
+
+          # Find all YAML files that look like Kubernetes manifests
+          K8S_FILES=$(find . -name '*.yaml' -o -name '*.yml' | \
+            grep -v node_modules | grep -v vendor | grep -v .git | \
+            grep -v '.github/workflows' | \
+            xargs grep -l 'apiVersion:' 2>/dev/null || true)
+
+          if [[ -z "$K8S_FILES" ]]; then
+            echo "::notice::No Kubernetes manifests found, skipping"
+            exit 0
+          fi
+
+          echo "Found $(echo "$K8S_FILES" | wc -l | tr -d ' ') Kubernetes manifest(s)"
+
+          # Validate with kubeconform
+          echo "$K8S_FILES" | xargs kubeconform \
+            -strict \
+            -summary \
+            -output json \
+            -kubernetes-version 1.29.0 \
+            -ignore-missing-schemas \
+            2>&1 | tee /tmp/kubeconform-output.json
+
+          # Check for errors in output
+          if echo "$K8S_FILES" | xargs kubeconform \
+            -strict \
+            -kubernetes-version 1.29.0 \
+            -ignore-missing-schemas; then
+            echo "::notice::All Kubernetes manifests are valid"
+          else
+            echo "::error::Kubernetes manifest validation failed"
+            exit 1
+          fi
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs: [yaml-lint, terraform-fmt, shellcheck, opa-tests, kubeconform]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Validation Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| YAML Lint | ${{ needs.yaml-lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Terraform Format | ${{ needs.terraform-fmt.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ShellCheck | ${{ needs.shellcheck.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OPA Tests | ${{ needs.opa-tests.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Kubeconform | ${{ needs.kubeconform.result }} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any check failed
+        if: >-
+          needs.yaml-lint.result == 'failure' ||
+          needs.terraform-fmt.result == 'failure' ||
+          needs.shellcheck.result == 'failure' ||
+          needs.opa-tests.result == 'failure' ||
+          needs.kubeconform.result == 'failure'
+        run: exit 1

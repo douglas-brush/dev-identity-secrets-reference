@@ -1,0 +1,70 @@
+name: Application Onboarding
+description: Request secrets management onboarding for a new application
+labels: ["onboarding", "secrets-management"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Application Secrets Onboarding
+        Complete this form to onboard a new application to centralized secrets management.
+  - type: input
+    id: app-name
+    attributes:
+      label: Application name
+      placeholder: my-service
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Target environments
+      multiple: true
+      options:
+        - dev
+        - staging
+        - prod
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime platform
+      options:
+        - Kubernetes
+        - VM / bare metal
+        - Serverless (Lambda/Functions)
+        - CI/CD only
+        - Local development
+    validations:
+      required: true
+  - type: dropdown
+    id: delivery-method
+    attributes:
+      label: Preferred secret delivery method
+      options:
+        - External Secrets Operator (Kubernetes Secret)
+        - Secrets Store CSI Driver (file mount)
+        - Vault Agent sidecar
+        - Environment variables from CI
+        - SOPS-encrypted config
+        - Not sure — need guidance
+    validations:
+      required: true
+  - type: checkboxes
+    id: secret-types
+    attributes:
+      label: Types of secrets needed
+      options:
+        - label: Database credentials (dynamic preferred)
+        - label: API keys / tokens
+        - label: TLS certificates
+        - label: SSH keys
+        - label: Cloud provider credentials
+        - label: Encryption keys (Transit/KMS)
+        - label: OAuth client secrets
+  - type: input
+    id: owner
+    attributes:
+      label: Application owner (team or individual)
+    validations:
+      required: true

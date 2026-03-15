@@ -1,0 +1,61 @@
+# =============================================================================
+# direnv configuration — automatic environment setup on directory entry
+# Copy to .envrc in your project root: cp platform/local-dev/direnv/.envrc.example .envrc
+# Then: direnv allow
+# =============================================================================
+
+# --- Core environment ---
+export APP_NAME="$(basename "$PWD")"
+export APP_ENV="dev"
+export LOG_LEVEL="debug"
+
+# --- Vault ---
+export VAULT_ADDR="${VAULT_ADDR:-https://vault.example.internal:8200}"
+export VAULT_AUTH_PATH="oidc"
+export VAULT_ROLE="developer"
+
+# Check and refresh Vault token
+if command -v vault &>/dev/null && [[ -n "$VAULT_ADDR" ]]; then
+  if vault token lookup &>/dev/null 2>&1; then
+    TTL=$(vault token lookup -format=json 2>/dev/null | jq -r '.data.ttl // 0')
+    if [[ "$TTL" -lt 600 ]]; then
+      echo "[direnv] Vault token expiring soon (TTL: ${TTL}s), attempting renewal..."
+      vault token renew &>/dev/null 2>&1 || echo "[direnv] Token renewal failed — run: vault login -method=oidc"
+    fi
+  else
+    echo "[direnv] No valid Vault token — run: vault login -method=oidc -path=${VAULT_AUTH_PATH} role=${VAULT_ROLE}"
+  fi
+fi
+
+# --- SOPS ---
+export SOPS_AGE_KEY_FILE="${HOME}/.config/sops/age/keys.txt"
+
+# Load age recipients from .sops.yaml if available
+if [[ -f ".sops.yaml" ]] && command -v yq &>/dev/null; then
+  AGE_RECIPIENTS=$(yq -r '.creation_rules[0].age // empty' .sops.yaml 2>/dev/null)
+  if [[ -n "$AGE_RECIPIENTS" ]]; then
+    export SOPS_AGE_RECIPIENTS="$AGE_RECIPIENTS"
+  fi
+fi
+
+# --- Decrypt SOPS secrets into environment ---
+if [[ -f "secrets.enc.yaml" ]] && command -v sops &>/dev/null; then
+  echo "[direnv] Decrypting secrets.enc.yaml..."
+  eval "$(sops -d --output-type dotenv secrets.enc.yaml 2>/dev/null)" || \
+    echo "[direnv] SOPS decryption failed — check your age key"
+fi
+
+# --- Load .env if it exists (local overrides) ---
+dotenv_if_exists .env
+
+# --- Project-specific paths ---
+PATH_add bin
+PATH_add node_modules/.bin
+
+# --- Kubernetes context (optional) ---
+# export KUBECONFIG="${HOME}/.kube/config"
+# export K8S_NAMESPACE="${APP_NAME}"
+
+# --- Docker ---
+# export COMPOSE_PROJECT_NAME="${APP_NAME}"
+# export DOCKER_BUILDKIT=1

@@ -1,0 +1,41 @@
+# Dev Identity & Secrets Reference — SOPS Configuration
+# Replace placeholder KMS ARNs/URLs before use.
+# First matching path_regex wins.
+
+creation_rules:
+  # === Development Environment ===
+  - path_regex: secrets/dev/.*\.enc\.(ya?ml|json)$
+    # AWS KMS (uncomment and replace):
+    # kms: 'arn:aws:kms:us-east-1:111122223333:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    # Azure Key Vault (uncomment and replace):
+    # azure_keyvault: 'https://your-dev-kv.vault.azure.net/keys/sops-dev/version'
+    # GCP Cloud KMS (uncomment and replace):
+    # gcp_kms: 'projects/your-project-dev/locations/global/keyRings/sops/cryptoKeys/dev'
+    # Break-glass recipient (age key in escrow):
+    age: 'age1replacewithbreakglassrecipientonly'
+    encrypted_regex: '^(data|stringData|secrets|env|password|token|client_secret|private_key|api_key|connection_string|credentials)$'
+
+  # === Staging Environment ===
+  - path_regex: secrets/staging/.*\.enc\.(ya?ml|json)$
+    age: 'age1replacewithbreakglassrecipientonly'
+    encrypted_regex: '^(data|stringData|secrets|env|password|token|client_secret|private_key|api_key|connection_string|credentials)$'
+
+  # === Production Environment ===
+  - path_regex: secrets/prod/.*\.enc\.(ya?ml|json)$
+    # Production MUST use cloud KMS — age-only is not acceptable for prod.
+    # Uncomment exactly one cloud KMS line below:
+    # kms: 'arn:aws:kms:us-east-1:111122223333:key/prod-key-id'
+    # azure_keyvault: 'https://your-prod-kv.vault.azure.net/keys/sops-prod/version'
+    # gcp_kms: 'projects/your-project-prod/locations/global/keyRings/sops/cryptoKeys/prod'
+    age: 'age1replacewithbreakglassrecipientonly'
+    encrypted_regex: '^(data|stringData|secrets|env|password|token|client_secret|private_key|api_key|connection_string|credentials)$'
+
+  # === Local Dev Configs ===
+  - path_regex: platform/local-dev/.*\.enc\.(ya?ml|json)$
+    age: 'age1replacewithbreakglassrecipientonly'
+    encrypted_regex: '^(data|stringData|secrets|env|password|token|client_secret|private_key|api_key|connection_string|credentials)$'
+
+  # === Helm Values ===
+  - path_regex: .*values\.enc\.(ya?ml|json)$
+    age: 'age1replacewithbreakglassrecipientonly'
+    encrypted_regex: '^(data|stringData|secrets|env|password|token|client_secret|private_key|api_key|connection_string|credentials)$'

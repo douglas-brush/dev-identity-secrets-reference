@@ -1,0 +1,111 @@
+# Reference Architecture Diagram
+
+```mermaid
+flowchart TB
+
+  subgraph HUMAN["Human / Device Trust Plane"]
+    DEV[Developer / Admin]
+    IDP[IdP / SSO]
+    MFA[Passkey / YubiKey / MFA]
+    MDM[MDM / Device Compliance]
+    PIM[PIM / Elevated Role Control]
+  end
+
+  DEV --> IDP
+  DEV --> MFA
+  DEV --> MDM
+  IDP --> PIM
+
+  subgraph REPO["Source + Configuration Plane"]
+    GIT[Git Provider]
+    SOPS[SOPS Encrypted YAML]
+    PR[Branch Protection / Review / Guardrails]
+  end
+
+  DEV --> GIT
+  GIT --> SOPS
+  GIT --> PR
+
+  subgraph CI["CI / Automation Plane"]
+    OIDC[OIDC Federation]
+    CIJOB[CI Workflow / Runner]
+  end
+
+  GIT --> CIJOB
+  CIJOB --> OIDC
+
+  subgraph CRYPTO["Crypto + Secrets Plane"]
+    KMS[Cloud KMS / Key Vault / Cloud KMS]
+    VAULT[Central Broker\n(Vault / Secret Manager / Hybrid)]
+    TRANSIT[Transit / Crypto as a Service]
+    PKI[Private PKI / CA Hierarchy]
+    SSHCA[SSH CA / Access Broker]
+    DYN[Dynamic Credentials]
+  end
+
+  SOPS --> KMS
+  DEV --> VAULT
+  OIDC --> VAULT
+  OIDC --> KMS
+  VAULT --> DYN
+  VAULT --> TRANSIT
+  VAULT --> SSHCA
+  PKI --> VAULT
+
+  subgraph RUNTIME["Runtime Delivery Plane"]
+    K8S[Kubernetes]
+    VM[VM / Cloud Host]
+    DEVBOX[Devcontainer / Codespace]
+    APP[Application / Service]
+    ESO[External Secrets]
+    CSI[Secrets Store CSI]
+    CM[cert-manager]
+    CMCSI[cert-manager CSI]
+    AGENT[Vault Agent / Template Rendering]
+  end
+
+  VAULT --> ESO
+  VAULT --> CSI
+  VAULT --> AGENT
+  PKI --> CM
+  CM --> CMCSI
+
+  DEV --> DEVBOX
+  DEVBOX --> VAULT
+
+  K8S --> ESO
+  K8S --> CSI
+  K8S --> CM
+  VM --> AGENT
+
+  ESO --> APP
+  CSI --> APP
+  CMCSI --> APP
+  AGENT --> APP
+
+  subgraph DATA["Protected Systems"]
+    DB[Database]
+    API[Internal API]
+    VPN[VPN / Wi-Fi / Network Services]
+  end
+
+  DYN --> DB
+  PKI --> VPN
+  SSHCA --> VM
+  APP --> API
+  APP --> DB
+
+  subgraph AUDIT["Audit / Monitoring / Recovery"]
+    SIEM[SIEM / Audit Logs]
+    BG[Break-Glass / Escrow\n(Dual Control)]
+  end
+
+  IDP --> SIEM
+  VAULT --> SIEM
+  KMS --> SIEM
+  PKI --> SIEM
+  SSHCA --> SIEM
+  BG --> VAULT
+  BG --> KMS
+  BG --> PKI
+```

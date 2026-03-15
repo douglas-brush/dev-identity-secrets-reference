@@ -1,0 +1,70 @@
+# =============================================================================
+# Encrypted Helm Values — SOPS + age
+# This is an EXAMPLE showing the structure of an encrypted values file.
+# In practice, encrypt with: sops -e values.yaml > values.enc.yaml
+# Deploy with: helm secrets upgrade demo-app ./chart -f values.enc.yaml
+# =============================================================================
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/my-org/demo-app
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: demo-app.example.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: demo-app-tls
+      hosts:
+        - demo-app.example.internal
+
+# Sensitive values below would be encrypted by SOPS
+secrets:
+  database:
+    host: postgres.internal
+    port: 5432
+    name: demo_db
+    username: ENC[AES256_GCM,data:ZGVtby11c2Vy,iv:abc123def456,tag:789012345678,type:str]
+    password: ENC[AES256_GCM,data:c3VwZXItc2VjcmV0LXBhc3N3b3Jk,iv:ghi789jkl012,tag:345678901234,type:str]
+  redis:
+    host: redis.internal
+    password: ENC[AES256_GCM,data:cmVkaXMtcGFzc3dvcmQ=,iv:mno345pqr678,tag:567890123456,type:str]
+  api_keys:
+    stripe: ENC[AES256_GCM,data:c2tfdGVzdF9hYmNkZWYxMjM0NTY=,iv:stu901vwx234,tag:789012345678,type:str]
+    sendgrid: ENC[AES256_GCM,data:U0cuYWJjZGVmMTIzNDU2Nzg5MA==,iv:yza567bcd890,tag:901234567890,type:str]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+
+sops:
+  age:
+    - recipient: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        <encrypted data key would appear here>
+        -----END AGE ENCRYPTED FILE-----
+  lastmodified: "2024-01-15T10:30:00Z"
+  mac: ENC[AES256_GCM,data:...,iv:...,tag:...,type:str]
+  version: 3.8.1

@@ -1,0 +1,102 @@
+# Reusable workflow that authenticates to Vault using GitHub OIDC.
+# Called by other workflows to obtain scoped Vault tokens.
+#
+# Usage:
+#   jobs:
+#     auth:
+#       uses: ./.github/workflows/oidc-vault-auth.yml
+#       with:
+#         vault_addr: https://vault.example.com
+#         vault_role: github-ci
+#
+# The caller MUST request `id-token: write` permission in its own
+# permissions block or the OIDC token request will fail.
+
+name: Vault OIDC Auth
+
+on:
+  workflow_call:
+    inputs:
+      vault_addr:
+        description: Full URL of the Vault cluster (e.g. https://vault.example.com)
+        required: true
+        type: string
+      vault_role:
+        description: Vault JWT auth role bound to this repository
+        required: true
+        type: string
+      vault_namespace:
+        description: Vault Enterprise namespace (leave empty for OSS)
+        required: false
+        type: string
+        default: ''
+      vault_auth_path:
+        description: Mount path for the JWT auth backend
+        required: false
+        type: string
+        default: jwt/github
+      token_ttl:
+        description: Requested token TTL (Vault may cap this via role config)
+        required: false
+        type: string
+        default: '600'
+    outputs:
+      vault_token:
+        description: Short-lived Vault token scoped to the requested role
+        value: ${{ jobs.auth.outputs.token }}
+
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write   # Required to request the OIDC JWT
+      contents: read     # Required for actions/checkout if needed downstream
+    outputs:
+      token: ${{ steps.vault-auth.outputs.token }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.vault_addr }}" ]]; then
+            echo "::error::vault_addr is required"
+            exit 1
+          fi
+          if [[ ! "${{ inputs.vault_addr }}" =~ ^https:// ]]; then
+            echo "::error::vault_addr must use HTTPS"
+            exit 1
+          fi
+          if [[ -z "${{ inputs.vault_role }}" ]]; then
+            echo "::error::vault_role is required"
+            exit 1
+          fi
+
+      - name: Authenticate to Vault via OIDC
+        id: vault-auth
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: ${{ inputs.vault_auth_path }}
+          namespace: ${{ inputs.vault_namespace }}
+          exportToken: true
+          # vault-action will request a GitHub OIDC token and exchange it
+          # for a Vault token. No static secrets are involved.
+
+      - name: Verify token is valid
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.vault-auth.outputs.token }}
+          VAULT_NAMESPACE: ${{ inputs.vault_namespace }}
+        run: |
+          set -euo pipefail
+          # Smoke-test the token — lookup will fail if it's invalid or expired
+          TOKEN_INFO=$(vault token lookup -format=json 2>/dev/null || true)
+          if [[ -z "$TOKEN_INFO" ]]; then
+            echo "::error::Vault token validation failed"
+            exit 1
+          fi
+          TTL=$(echo "$TOKEN_INFO" | jq -r '.data.ttl')
+          POLICIES=$(echo "$TOKEN_INFO" | jq -r '.data.policies | join(", ")')
+          echo "::notice::Vault token acquired — TTL: ${TTL}s, policies: ${POLICIES}"

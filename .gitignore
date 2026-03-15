@@ -1,0 +1,102 @@
+# === Secrets & Credentials ===
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.jks
+*.keystore
+
+# Token and secret files
+*.token
+*.secret
+*.agekey
+*.age-key
+
+# Decrypted SOPS files (never commit)
+*.dec.yaml
+*.dec.yml
+*.dec.json
+*.plain.yaml
+*.plain.yml
+
+# Environment files with secrets
+.env
+.env.*
+!.env.template
+!.env.example
+!.envrc.example
+
+# Vault tokens
+.vault-token
+
+# AWS credentials
+.aws/credentials
+.aws/config
+
+# GCP credentials
+*.json
+!package.json
+!tsconfig.json
+!devcontainer.json
+!.github/**/*.json
+!tests/**/*.json
+!tools/**/*.json
+!kyverno/**/*.json
+
+# Azure tokens
+.azure/
+
+# === Development ===
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.npm/
+package-lock.json
+
+# === Infrastructure ===
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+*.tfvars
+!*.tfvars.example
+
+# === Build & Output ===
+tmp/
+out/
+dist/
+build/
+*.zip
+*.tar.gz
+
+# === OS ===
+.DS_Store
+Thumbs.db

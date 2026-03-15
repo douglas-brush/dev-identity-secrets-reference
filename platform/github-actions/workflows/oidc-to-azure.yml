@@ -1,0 +1,221 @@
+# Complete example: GitHub Actions OIDC authentication to Azure.
+#
+# Demonstrates:
+# - OIDC federation via Azure AD workload identity
+# - Azure Key Vault secret read
+# - AKS credential fetch
+#
+# Prerequisites:
+# - Azure AD app registration with federated credential for this repo
+# - Key Vault with RBAC access policy for the app
+# - AKS cluster with the app granted Azure Kubernetes Service Cluster User role
+
+name: "Example: OIDC to Azure"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+permissions:
+  id-token: write    # OIDC token request
+  contents: read
+
+concurrency:
+  group: azure-ops-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Step 1: Authenticate ──────────────────────────────────────────────
+  azure-auth:
+    name: Authenticate to Azure
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    outputs:
+      subscription_id: ${{ steps.verify.outputs.subscription_id }}
+      tenant_id: ${{ steps.verify.outputs.tenant_id }}
+    steps:
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          # Federated credential — no client secret needed
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify authentication
+        id: verify
+        run: |
+          set -euo pipefail
+          ACCOUNT_INFO=$(az account show --output json)
+          SUB_NAME=$(echo "$ACCOUNT_INFO" | jq -r '.name')
+          SUB_ID=$(echo "$ACCOUNT_INFO" | jq -r '.id')
+          TENANT_ID=$(echo "$ACCOUNT_INFO" | jq -r '.tenantId')
+          echo "::notice::Authenticated to subscription '${SUB_NAME}' (${SUB_ID})"
+          echo "subscription_id=${SUB_ID}" >> "$GITHUB_OUTPUT"
+          echo "tenant_id=${TENANT_ID}" >> "$GITHUB_OUTPUT"
+
+  # ── Step 2: Key Vault secret read ─────────────────────────────────────
+  keyvault:
+    name: Read Key Vault Secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: azure-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Read secrets from Key Vault
+        run: |
+          set -euo pipefail
+          VAULT_NAME="${{ vars.AZURE_KEYVAULT_NAME }}"
+
+          if [[ -z "${VAULT_NAME:-}" ]]; then
+            echo "::notice::AZURE_KEYVAULT_NAME not configured, skipping"
+            exit 0
+          fi
+
+          echo "Reading secrets from Key Vault: ${VAULT_NAME}"
+
+          # List secrets (names only — not values)
+          SECRET_LIST=$(az keyvault secret list \
+            --vault-name "$VAULT_NAME" \
+            --query '[].name' \
+            --output tsv 2>/dev/null) || {
+              echo "::error::Failed to list secrets in ${VAULT_NAME}"
+              exit 1
+            }
+
+          if [[ -z "$SECRET_LIST" ]]; then
+            echo "::notice::No secrets found in ${VAULT_NAME}"
+            exit 0
+          fi
+
+          SECRET_COUNT=$(echo "$SECRET_LIST" | wc -l | tr -d ' ')
+          echo "::notice::Found ${SECRET_COUNT} secret(s) in ${VAULT_NAME}"
+
+          # Read a specific secret (example)
+          TARGET_SECRET="${{ vars.AZURE_SECRET_NAME }}"
+          if [[ -n "${TARGET_SECRET:-}" ]]; then
+            SECRET_VALUE=$(az keyvault secret show \
+              --vault-name "$VAULT_NAME" \
+              --name "$TARGET_SECRET" \
+              --query 'value' \
+              --output tsv 2>/dev/null) || {
+                echo "::error::Failed to read secret: ${TARGET_SECRET}"
+                exit 1
+              }
+
+            # Mask the value in logs
+            echo "::add-mask::${SECRET_VALUE}"
+            echo "::notice::Secret '${TARGET_SECRET}' read successfully"
+
+            # Export for downstream steps (masked)
+            echo "APP_SECRET=${SECRET_VALUE}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Key Vault audit summary
+        run: |
+          set -euo pipefail
+          VAULT_NAME="${{ vars.AZURE_KEYVAULT_NAME }}"
+          [[ -z "${VAULT_NAME:-}" ]] && exit 0
+
+          echo "## Key Vault Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Vault:** ${VAULT_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # Show secret metadata (not values)
+          az keyvault secret list \
+            --vault-name "$VAULT_NAME" \
+            --query '[].{Name:name, Enabled:attributes.enabled, Updated:attributes.updated}' \
+            --output table >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+  # ── Step 3: AKS credential fetch ──────────────────────────────────────
+  aks-creds:
+    name: Fetch AKS Credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: azure-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: |
+          set -euo pipefail
+          CLUSTER_NAME="${{ vars.AKS_CLUSTER_NAME }}"
+          RESOURCE_GROUP="${{ vars.AKS_RESOURCE_GROUP }}"
+
+          if [[ -z "${CLUSTER_NAME:-}" || -z "${RESOURCE_GROUP:-}" ]]; then
+            echo "::notice::AKS_CLUSTER_NAME or AKS_RESOURCE_GROUP not configured, skipping"
+            exit 0
+          fi
+
+          # Fetch kubeconfig (uses the OIDC-authenticated Azure CLI session)
+          az aks get-credentials \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CLUSTER_NAME" \
+            --overwrite-existing
+
+          echo "::notice::AKS credentials fetched for cluster '${CLUSTER_NAME}'"
+
+      - name: Verify cluster access
+        run: |
+          set -euo pipefail
+          CLUSTER_NAME="${{ vars.AKS_CLUSTER_NAME }}"
+          [[ -z "${CLUSTER_NAME:-}" ]] && exit 0
+
+          # Verify we can talk to the cluster
+          kubectl cluster-info 2>/dev/null || {
+            echo "::warning::Cannot connect to AKS cluster"
+            exit 0
+          }
+
+          SERVER_VERSION=$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion' || echo 'unknown')
+          NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          echo "::notice::AKS cluster verified — version: ${SERVER_VERSION}, nodes: ${NODE_COUNT}"
+
+      - name: Cleanup kubeconfig
+        if: always()
+        run: |
+          rm -f ~/.kube/config 2>/dev/null || true
+
+  # ── Summary ───────────────────────────────────────────────────────────
+  summary:
+    name: Workflow Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs: [azure-auth, keyvault, aks-creds]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Azure OIDC Workflow Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Environment:** ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Subscription:** ${{ needs.azure-auth.outputs.subscription_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Operation | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OIDC Authentication | ${{ needs.azure-auth.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key Vault Read | ${{ needs.keyvault.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| AKS Credentials | ${{ needs.aks-creds.result }} |" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,239 @@
+# Complete example: GitHub Actions OIDC authentication to AWS.
+#
+# Demonstrates:
+# - OIDC federation — no AWS access keys stored in GitHub
+# - S3 access verification
+# - Secrets Manager read
+# - ECR login for container operations
+#
+# Prerequisites:
+# - AWS IAM OIDC identity provider for token.actions.githubusercontent.com
+# - IAM role with trust policy for this repository
+# - Role ARN stored as a GitHub Actions variable (not a secret)
+
+name: "Example: OIDC to AWS"
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region
+        required: true
+        type: string
+        default: us-east-1
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+permissions:
+  id-token: write    # OIDC token request
+  contents: read
+
+concurrency:
+  group: aws-ops-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Step 1: Authenticate ──────────────────────────────────────────────
+  aws-auth:
+    name: Authenticate to AWS
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    outputs:
+      account_id: ${{ steps.verify.outputs.account_id }}
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Role ARN is stored as an environment variable, not a secret.
+          # The trust policy on the role restricts which repos/branches can assume it.
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: github-actions-${{ github.run_id }}
+          role-duration-seconds: 900  # 15 minutes — keep it short
+
+      - name: Verify authentication
+        id: verify
+        run: |
+          set -euo pipefail
+          IDENTITY=$(aws sts get-caller-identity --output json)
+          ACCOUNT_ID=$(echo "$IDENTITY" | jq -r '.Account')
+          ARN=$(echo "$IDENTITY" | jq -r '.Arn')
+          echo "::notice::Authenticated as ${ARN} in account ${ACCOUNT_ID}"
+          echo "account_id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+
+  # ── Step 2: S3 access verification ────────────────────────────────────
+  s3-access:
+    name: Verify S3 Access
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: aws-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: github-actions-s3-${{ github.run_id }}
+          role-duration-seconds: 900
+
+      - name: List and verify S3 bucket access
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment }}"
+
+          # List buckets the role has access to
+          echo "Listing accessible S3 buckets..."
+          BUCKETS=$(aws s3api list-buckets --query 'Buckets[].Name' --output text 2>/dev/null || true)
+
+          if [[ -z "$BUCKETS" ]]; then
+            echo "::notice::No S3 buckets accessible with current role (this may be expected)"
+            exit 0
+          fi
+
+          BUCKET_COUNT=$(echo "$BUCKETS" | wc -w | tr -d ' ')
+          echo "::notice::Role has access to ${BUCKET_COUNT} S3 bucket(s)"
+
+          # Example: verify access to a specific bucket
+          TARGET_BUCKET="${{ vars.APP_BUCKET_NAME }}"
+          if [[ -n "${TARGET_BUCKET:-}" ]]; then
+            if aws s3api head-bucket --bucket "$TARGET_BUCKET" 2>/dev/null; then
+              echo "::notice::Verified access to bucket: ${TARGET_BUCKET}"
+            else
+              echo "::warning::Cannot access target bucket: ${TARGET_BUCKET}"
+            fi
+          fi
+
+  # ── Step 3: Secrets Manager read ──────────────────────────────────────
+  secrets-manager:
+    name: Read from Secrets Manager
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: aws-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: github-actions-sm-${{ github.run_id }}
+          role-duration-seconds: 900
+
+      - name: Read secret from Secrets Manager
+        run: |
+          set -euo pipefail
+          ENVIRONMENT="${{ inputs.environment }}"
+          SECRET_ID="${{ vars.APP_SECRET_ID }}"
+
+          if [[ -z "${SECRET_ID:-}" ]]; then
+            echo "::notice::APP_SECRET_ID not configured, skipping Secrets Manager test"
+            exit 0
+          fi
+
+          # Read the secret value
+          SECRET_VALUE=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ID" \
+            --query 'SecretString' \
+            --output text 2>/dev/null) || {
+              echo "::error::Failed to read secret: ${SECRET_ID}"
+              exit 1
+            }
+
+          # Mask the value in logs
+          echo "::add-mask::${SECRET_VALUE}"
+
+          # Parse if JSON — count keys as a verification step
+          if echo "$SECRET_VALUE" | jq empty 2>/dev/null; then
+            KEY_COUNT=$(echo "$SECRET_VALUE" | jq 'keys | length')
+            echo "::notice::Secret '${SECRET_ID}' read successfully (${KEY_COUNT} keys)"
+          else
+            echo "::notice::Secret '${SECRET_ID}' read successfully (plain string)"
+          fi
+
+      - name: List secret versions (audit)
+        run: |
+          set -euo pipefail
+          SECRET_ID="${{ vars.APP_SECRET_ID }}"
+          [[ -z "${SECRET_ID:-}" ]] && exit 0
+
+          echo "## Secret Version History" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          aws secretsmanager list-secret-version-ids \
+            --secret-id "$SECRET_ID" \
+            --query 'Versions[*].[VersionId, CreatedDate, VersionStages[0]]' \
+            --output table >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+  # ── Step 4: ECR login ─────────────────────────────────────────────────
+  ecr-login:
+    name: ECR Container Registry Login
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: aws-auth
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: github-actions-ecr-${{ github.run_id }}
+          role-duration-seconds: 900
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify ECR access
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -euo pipefail
+          echo "::notice::Logged in to ECR registry: ${ECR_REGISTRY}"
+
+          # List repositories accessible to this role
+          REPOS=$(aws ecr describe-repositories \
+            --query 'repositories[].repositoryName' \
+            --output text 2>/dev/null || true)
+
+          if [[ -n "$REPOS" ]]; then
+            REPO_COUNT=$(echo "$REPOS" | wc -w | tr -d ' ')
+            echo "::notice::ECR access verified — ${REPO_COUNT} repositor(ies) accessible"
+          else
+            echo "::notice::No ECR repositories found (role may not have ecr:DescribeRepositories)"
+          fi
+
+      - name: ECR logout
+        if: always()
+        run: docker logout ${{ steps.ecr-login.outputs.registry }} 2>/dev/null || true
+
+  # ── Summary ───────────────────────────────────────────────────────────
+  summary:
+    name: Workflow Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs: [aws-auth, s3-access, secrets-manager, ecr-login]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## AWS OIDC Workflow Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Environment:** ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Region:** ${{ inputs.aws_region }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Account:** ${{ needs.aws-auth.outputs.account_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Operation | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OIDC Authentication | ${{ needs.aws-auth.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| S3 Access | ${{ needs.s3-access.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secrets Manager | ${{ needs.secrets-manager.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ECR Login | ${{ needs.ecr-login.result }} |" >> "$GITHUB_STEP_SUMMARY"

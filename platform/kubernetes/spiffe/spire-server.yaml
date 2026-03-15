@@ -1,0 +1,261 @@
+# SPIRE Server — Deployment + ConfigMap + Service
+# The SPIRE Server is the central authority that issues SVIDs (SPIFFE Verifiable
+# Identity Documents) to workloads. It maintains the registration entries and
+# manages the trust bundle.
+# Requires: SPIRE CRDs installed, persistent storage for datastore.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spire
+  labels:
+    app.kubernetes.io/name: spire
+    app.kubernetes.io/part-of: spiffe
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: spiffe
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: spiffe
+rules:
+  # Token review for node attestation
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  # Pod lookup for workload attestation
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Manage SPIFFE ID CRDs
+  - apiGroups: ["spire.spiffe.io"]
+    resources: ["clusterspiffeids", "clusterspiffeids/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["spire.spiffe.io"]
+    resources: ["clusterfederatedtrustdomains", "clusterfederatedtrustdomains/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/part-of: spiffe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server
+subjects:
+  - kind: ServiceAccount
+    name: spire-server
+    namespace: spire
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server-config
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: spiffe
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      trust_domain = "example.com"
+      data_dir = "/run/spire/data"
+      log_level = "INFO"
+      ca_ttl = "168h"        # 7 days — intermediate CA lifetime
+      default_x509_svid_ttl = "4h"
+      default_jwt_svid_ttl = "1h"
+
+      ca_key_type = "ec-p256"
+
+      # Federation — allow trust bundle exchange with other trust domains
+      # federation {
+      #   bundle_endpoint {
+      #     address = "0.0.0.0"
+      #     port = 8443
+      #   }
+      # }
+    }
+
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          clusters = {
+            "my-cluster" = {
+              service_account_allow_list = ["spire:spire-agent"]
+            }
+          }
+        }
+      }
+
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+        }
+      }
+
+      Notifier "k8sbundle" {
+        plugin_data {
+          namespace = "spire"
+          config_map = "spire-bundle"
+        }
+      }
+    }
+
+    health_checks {
+      listener_enabled = true
+      bind_address = "0.0.0.0"
+      bind_port = "8080"
+      live_path = "/live"
+      ready_path = "/ready"
+    }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: spiffe
+    app.kubernetes.io/managed-by: platform-team
+spec:
+  replicas: 1
+  serviceName: spire-server
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-server
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-server
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: spire-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:1.9.6
+          args:
+            - "-config"
+            - "/run/spire/config/server.conf"
+          ports:
+            - name: grpc
+              containerPort: 8081
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: data
+              mountPath: /run/spire/data
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: spire-server-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: spire-server
+          app.kubernetes.io/component: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: spiffe
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 8081
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/component: server
+---
+# ConfigMap to hold the SPIRE trust bundle — auto-populated by the k8sbundle notifier
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bundle
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spire-bundle
+    app.kubernetes.io/component: trust-bundle
+    app.kubernetes.io/part-of: spiffe

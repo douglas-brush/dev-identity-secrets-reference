@@ -1,0 +1,73 @@
+# Pre-commit hooks for secrets detection and repo hygiene.
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # === Secret Detection ===
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: no-plaintext-secrets
+        name: Block plaintext secrets in repository
+        entry: ./bootstrap/scripts/check_no_plaintext_secrets.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: no-unencrypted-secrets-dir
+        name: Block unencrypted files in secrets/ directories
+        entry: bash -c 'find secrets/ -name "*.yaml" -o -name "*.yml" -o -name "*.json" | grep -v "\.enc\." | grep -v "README" && echo "[!] Found unencrypted files in secrets/ directory" && exit 1 || exit 0'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: no-todo-replace
+        name: Block placeholder values
+        entry: bash -c 'grep -rIn "TODO_REPLACE_ME\|REPLACE_THIS\|CHANGEME\|example\.internal\|111122223333\|replacewithbreakglass" docs/ platform/ examples/ bootstrap/ tools/ tests/ 2>/dev/null && echo "[!] Found placeholder values that must be replaced" && exit 1 || exit 0'
+        language: system
+        pass_filenames: false
+
+      - id: no-private-keys
+        name: Block private key files
+        entry: bash -c 'git diff --cached --name-only | grep -E "\.(pem|key|p12|pfx|jks)$" && echo "[!] Private key files must not be committed" && exit 1 || exit 0'
+        language: system
+        pass_filenames: false
+
+      - id: sops-encrypted-check
+        name: Verify SOPS encryption on secrets files
+        entry: bash -c 'for f in $(git diff --cached --name-only | grep -E "secrets/.*\.(yaml|yml|json)$" | grep "\.enc\."); do if ! grep -q "sops:" "$f" 2>/dev/null && ! grep -q "\"sops\":" "$f" 2>/dev/null; then echo "[!] $f appears to be in secrets/ but is not SOPS-encrypted"; exit 1; fi; done'
+        language: system
+        pass_filenames: false
+
+  # === YAML/JSON Validation ===
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+      - id: check-json
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+
+  # === Shell Script Linting ===
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ['-e', 'SC1091']
+
+  # === Terraform ===
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+      - id: terraform_tflint

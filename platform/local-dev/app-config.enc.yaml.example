@@ -1,0 +1,60 @@
+# =============================================================================
+# Example SOPS-encrypted application configuration
+# This file shows the STRUCTURE of an encrypted config.
+# In practice, sensitive values are encrypted by SOPS and look like:
+#   ENC[AES256_GCM,data:...,iv:...,tag:...,type:str]
+#
+# Encrypt: sops -e app-config.yaml > app-config.enc.yaml
+# Decrypt: sops -d app-config.enc.yaml
+# Edit:    sops app-config.enc.yaml
+# =============================================================================
+
+app:
+  name: demo-app
+  environment: dev
+  version: "1.0.0"
+
+database:
+  host: postgres.internal
+  port: 5432
+  name: demo_db
+  ssl_mode: require
+  # These values would be encrypted by SOPS:
+  username: ENC[AES256_GCM,data:dGVzdC11c2Vy,iv:abc123,tag:def456,type:str]
+  password: ENC[AES256_GCM,data:c3VwZXItc2VjcmV0,iv:ghi789,tag:jkl012,type:str]
+
+redis:
+  host: redis.internal
+  port: 6379
+  password: ENC[AES256_GCM,data:cmVkaXMtcGFzcw==,iv:mno345,tag:pqr678,type:str]
+  tls: true
+
+api_keys:
+  stripe_secret: ENC[AES256_GCM,data:c2tfdGVzdF8xMjM0NTY=,iv:stu901,tag:vwx234,type:str]
+  sendgrid: ENC[AES256_GCM,data:U0cuYWJjZGVm,iv:yza567,tag:bcd890,type:str]
+  webhook_signing_secret: ENC[AES256_GCM,data:d2hza18xMjM=,iv:efg123,tag:hij456,type:str]
+
+oauth:
+  client_id: demo-app-dev
+  client_secret: ENC[AES256_GCM,data:b2F1dGgtc2VjcmV0,iv:klm789,tag:nop012,type:str]
+  issuer_url: https://login.example.internal/realms/dev
+
+feature_flags:
+  enable_new_dashboard: true
+  enable_audit_logging: true
+  max_upload_size_mb: 50
+
+sops:
+  kms: []
+  gcp_kms: []
+  azure_kv: []
+  hc_vault: []
+  age:
+    - recipient: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        <encrypted data key>
+        -----END AGE ENCRYPTED FILE-----
+  lastmodified: "2024-01-15T10:30:00Z"
+  mac: ENC[AES256_GCM,data:...,iv:...,tag:...,type:str]
+  version: 3.8.1

@@ -1,0 +1,22 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Encryption markers
+*.enc.yaml diff=sopsdiffer
+*.enc.yml diff=sopsdiffer
+*.enc.json diff=sopsdiffer
+
+# Shell scripts must be LF
+*.sh text eol=lf
+*.bash text eol=lf
+
+# HCL / Terraform
+*.hcl text eol=lf
+*.tf text eol=lf

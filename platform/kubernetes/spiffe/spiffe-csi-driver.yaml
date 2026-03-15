@@ -1,0 +1,132 @@
+# SPIFFE CSI Driver — DaemonSet
+# Provides a CSI ephemeral volume that exposes the SPIRE Workload API socket
+# to workload pods. This is the recommended method for workloads to obtain SVIDs
+# without mounting hostPath volumes directly.
+# Requires: SPIRE Agent running on each node.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spiffe-csi-driver
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spiffe-csi-driver
+    app.kubernetes.io/component: csi-driver
+    app.kubernetes.io/part-of: spiffe
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.spiffe.io
+  labels:
+    app.kubernetes.io/name: spiffe-csi-driver
+    app.kubernetes.io/component: csi-driver
+    app.kubernetes.io/part-of: spiffe
+spec:
+  # Ephemeral volumes only — no persistent volume support
+  volumeLifecycleModes:
+    - Ephemeral
+  # No need for pod info; SPIRE Agent handles attestation
+  podInfoOnMount: false
+  # No filesystem group policy needed
+  fsGroupPolicy: None
+  # No attachment needed for ephemeral inline volumes
+  attachRequired: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spiffe-csi-driver
+  namespace: spire
+  labels:
+    app.kubernetes.io/name: spiffe-csi-driver
+    app.kubernetes.io/component: csi-driver
+    app.kubernetes.io/part-of: spiffe
+    app.kubernetes.io/managed-by: platform-team
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spiffe-csi-driver
+      app.kubernetes.io/component: csi-driver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spiffe-csi-driver
+        app.kubernetes.io/component: csi-driver
+    spec:
+      serviceAccountName: spiffe-csi-driver
+
+      containers:
+        - name: spiffe-csi-driver
+          image: ghcr.io/spiffe/spiffe-csi-driver:0.2.6
+          args:
+            - "-workload-api-socket-dir"
+            - "/spire-agent-socket"
+            - "-csi-socket-path"
+            - "/spiffe-csi/csi.sock"
+          securityContext:
+            # CSI driver requires privileged to manage volumes
+            privileged: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            # SPIRE Agent workload API socket
+            - name: spire-agent-socket
+              mountPath: /spire-agent-socket
+              readOnly: true
+            # CSI driver socket — kubelet communicates here
+            - name: spiffe-csi-socket
+              mountPath: /spiffe-csi
+            # Mount propagation point for pod volumes
+            - name: mountpoint-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+
+        # CSI node driver registrar — registers the driver with kubelet
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.1
+          args:
+            - "-csi-address"
+            - "/spiffe-csi/csi.sock"
+            - "-kubelet-registration-path"
+            - "/var/lib/kubelet/plugins/csi.spiffe.io/csi.sock"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: spiffe-csi-socket
+              mountPath: /spiffe-csi
+            - name: registration-dir
+              mountPath: /registration
+
+      volumes:
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+        - name: spiffe-csi-socket
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.spiffe.io
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory

@@ -1,0 +1,312 @@
+# Reusable workflow for SOPS decryption and deployment.
+# Decrypts SOPS-encrypted files using cloud KMS and deploys to the target environment.
+#
+# Supports AWS KMS, GCP KMS, and Azure Key Vault as SOPS backends.
+# The calling workflow must authenticate to the cloud provider first
+# (e.g., via the oidc-vault-auth reusable workflow or direct OIDC).
+#
+# Usage:
+#   jobs:
+#     deploy:
+#       uses: ./.github/workflows/sops-decrypt-deploy.yml
+#       with:
+#         environment: production
+#         sops_files: 'secrets/prod/*.yaml'
+#         kms_provider: aws
+#         deploy_target: kubernetes
+#         k8s_namespace: my-app
+
+name: SOPS Decrypt & Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment for protection rules
+        required: true
+        type: string
+      sops_files:
+        description: "Glob pattern for SOPS-encrypted files to decrypt"
+        required: true
+        type: string
+      kms_provider:
+        description: "KMS backend: 'aws', 'gcp', or 'azure'"
+        required: true
+        type: string
+      sops_version:
+        description: SOPS version to install
+        required: false
+        type: string
+        default: '3.9.0'
+      deploy_target:
+        description: "Deployment target: 'kubernetes', 'file', or 'env'"
+        required: false
+        type: string
+        default: kubernetes
+      k8s_namespace:
+        description: Kubernetes namespace for secret deployment
+        required: false
+        type: string
+        default: default
+      k8s_secret_name:
+        description: Name of the Kubernetes secret to create/update
+        required: false
+        type: string
+        default: app-secrets
+      k8s_cluster_name:
+        description: Kubernetes cluster name (for cloud provider kubectl config)
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: Run in dry-run mode (decrypt and validate but do not deploy)
+        required: false
+        type: boolean
+        default: false
+      cleanup:
+        description: Remove decrypted files after deployment
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ROLE_ARN:
+        description: AWS IAM role ARN for KMS access (when kms_provider is aws)
+        required: false
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        description: GCP workload identity provider (when kms_provider is gcp)
+        required: false
+      GCP_SERVICE_ACCOUNT:
+        description: GCP service account email (when kms_provider is gcp)
+        required: false
+      AZURE_CLIENT_ID:
+        description: Azure AD application client ID (when kms_provider is azure)
+        required: false
+      AZURE_TENANT_ID:
+        description: Azure AD tenant ID (when kms_provider is azure)
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        description: Azure subscription ID (when kms_provider is azure)
+        required: false
+
+jobs:
+  decrypt-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write   # For OIDC auth to cloud KMS
+      contents: read
+    concurrency:
+      group: deploy-${{ inputs.environment }}-${{ inputs.k8s_namespace }}
+      cancel-in-progress: false  # Never cancel in-progress deployments
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install SOPS
+        run: |
+          set -euo pipefail
+          SOPS_VERSION="${{ inputs.sops_version }}"
+          curl -fsSL -o /tmp/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          chmod +x /tmp/sops
+          sudo mv /tmp/sops /usr/local/bin/sops
+          sops --version
+          echo "::notice::Installed SOPS v${SOPS_VERSION}"
+
+      # ── Cloud authentication ───────────────────────────────────────────
+      - name: Authenticate to AWS
+        if: inputs.kms_provider == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: sops-decrypt-${{ github.run_id }}
+
+      - name: Authenticate to GCP
+        if: inputs.kms_provider == 'gcp'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Azure
+        if: inputs.kms_provider == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Decrypt SOPS files ─────────────────────────────────────────────
+      - name: Decrypt SOPS files
+        id: decrypt
+        run: |
+          set -euo pipefail
+
+          DECRYPT_DIR=$(mktemp -d)
+          echo "decrypt_dir=${DECRYPT_DIR}" >> "$GITHUB_OUTPUT"
+
+          FILE_COUNT=0
+          ERROR_COUNT=0
+
+          for file in ${{ inputs.sops_files }}; do
+            if [[ ! -f "$file" ]]; then
+              echo "::warning::No files matching pattern: $file"
+              continue
+            fi
+
+            BASENAME=$(basename "$file")
+            OUTFILE="${DECRYPT_DIR}/${BASENAME}"
+
+            echo "Decrypting: ${file}"
+            if sops --decrypt "$file" > "$OUTFILE" 2>/tmp/sops-err; then
+              FILE_COUNT=$((FILE_COUNT + 1))
+              echo "::notice::Decrypted: ${file}"
+            else
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+              echo "::error file=${file}::SOPS decryption failed: $(cat /tmp/sops-err)"
+            fi
+          done
+
+          echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "error_count=${ERROR_COUNT}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$ERROR_COUNT" -gt 0 ]]; then
+            echo "::error::${ERROR_COUNT} file(s) failed to decrypt"
+            exit 1
+          fi
+
+          if [[ "$FILE_COUNT" -eq 0 ]]; then
+            echo "::error::No files were decrypted"
+            exit 1
+          fi
+
+          echo "::notice::Successfully decrypted ${FILE_COUNT} file(s)"
+
+      # ── Validate decrypted content ─────────────────────────────────────
+      - name: Validate decrypted files
+        run: |
+          set -euo pipefail
+          DECRYPT_DIR="${{ steps.decrypt.outputs.decrypt_dir }}"
+
+          for file in "${DECRYPT_DIR}"/*; do
+            [[ ! -f "$file" ]] && continue
+
+            # Verify the file is valid YAML or JSON
+            if [[ "$file" == *.yaml || "$file" == *.yml ]]; then
+              if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
+                echo "::error::Invalid YAML after decryption: $(basename "$file")"
+                exit 1
+              fi
+            elif [[ "$file" == *.json ]]; then
+              if ! python3 -c "import json; json.load(open('$file'))" 2>/dev/null; then
+                echo "::error::Invalid JSON after decryption: $(basename "$file")"
+                exit 1
+              fi
+            fi
+
+            # Verify no SOPS metadata remains (would indicate partial decryption)
+            if grep -q 'sops_version' "$file" 2>/dev/null; then
+              echo "::error::SOPS metadata still present in $(basename "$file") — partial decryption"
+              exit 1
+            fi
+          done
+
+          echo "::notice::All decrypted files validated successfully"
+
+      # ── Deploy to Kubernetes ───────────────────────────────────────────
+      - name: Deploy to Kubernetes
+        if: inputs.deploy_target == 'kubernetes' && !inputs.dry_run
+        run: |
+          set -euo pipefail
+          DECRYPT_DIR="${{ steps.decrypt.outputs.decrypt_dir }}"
+          NAMESPACE="${{ inputs.k8s_namespace }}"
+          SECRET_NAME="${{ inputs.k8s_secret_name }}"
+
+          # Build the kubectl create secret command
+          SECRET_ARGS=""
+          for file in "${DECRYPT_DIR}"/*; do
+            [[ ! -f "$file" ]] && continue
+            BASENAME=$(basename "$file")
+            SECRET_ARGS="${SECRET_ARGS} --from-file=${BASENAME}=${file}"
+          done
+
+          # Create or update the Kubernetes secret
+          kubectl create secret generic "${SECRET_NAME}" \
+            --namespace="${NAMESPACE}" \
+            ${SECRET_ARGS} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "::notice::Secret '${SECRET_NAME}' deployed to namespace '${NAMESPACE}'"
+
+      # ── Deploy as environment file ─────────────────────────────────────
+      - name: Prepare env file output
+        if: inputs.deploy_target == 'env' && !inputs.dry_run
+        id: env-output
+        run: |
+          set -euo pipefail
+          DECRYPT_DIR="${{ steps.decrypt.outputs.decrypt_dir }}"
+
+          # Merge all decrypted YAML files into a flat .env format
+          ENV_FILE="${DECRYPT_DIR}/combined.env"
+          for file in "${DECRYPT_DIR}"/*; do
+            [[ ! -f "$file" || "$file" == *.env ]] && continue
+            python3 -c "
+          import yaml, sys
+          with open('$file') as f:
+              data = yaml.safe_load(f)
+          if isinstance(data, dict):
+              for k, v in data.items():
+                  print(f'{k}={v}')
+          " >> "$ENV_FILE"
+          done
+
+          echo "env_file=${ENV_FILE}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Environment file prepared with $(wc -l < "$ENV_FILE") variables"
+
+      # ── Dry run summary ────────────────────────────────────────────────
+      - name: Dry run summary
+        if: inputs.dry_run
+        run: |
+          set -euo pipefail
+          DECRYPT_DIR="${{ steps.decrypt.outputs.decrypt_dir }}"
+
+          echo "## Dry Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| File | Keys | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|------|" >> "$GITHUB_STEP_SUMMARY"
+
+          for file in "${DECRYPT_DIR}"/*; do
+            [[ ! -f "$file" ]] && continue
+            BASENAME=$(basename "$file")
+            KEYS=$(python3 -c "
+          import yaml, json, sys
+          with open('$file') as f:
+              try:
+                  data = yaml.safe_load(f)
+              except:
+                  data = json.load(open('$file'))
+          print(len(data) if isinstance(data, dict) else 'N/A')
+          " 2>/dev/null || echo "N/A")
+            SIZE=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
+            echo "| ${BASENAME} | ${KEYS} | ${SIZE} bytes |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Dry run mode — no changes were deployed." >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Cleanup ────────────────────────────────────────────────────────
+      - name: Cleanup decrypted files
+        if: always() && inputs.cleanup
+        run: |
+          set -euo pipefail
+          DECRYPT_DIR="${{ steps.decrypt.outputs.decrypt_dir }}"
+          if [[ -d "$DECRYPT_DIR" ]]; then
+            # Secure delete — overwrite before removing
+            find "$DECRYPT_DIR" -type f -exec shred -u {} \; 2>/dev/null || \
+            find "$DECRYPT_DIR" -type f -delete
+            rmdir "$DECRYPT_DIR" 2>/dev/null || true
+            echo "::notice::Decrypted files securely removed"
+          fi

@@ -1,0 +1,77 @@
+# ClusterSPIFFEID — Workload Identity Registration
+# Automatically registers SPIFFE IDs for workloads matching the selector.
+# When a pod matches, SPIRE issues an X.509 SVID with the specified SPIFFE ID.
+# Requires: SPIRE Controller Manager (manages ClusterSPIFFEID CRDs).
+---
+# Backend service identity — matches pods with the backend label
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: my-app-backend
+  labels:
+    app.kubernetes.io/name: my-app-backend
+    app.kubernetes.io/component: identity
+    app.kubernetes.io/part-of: spiffe
+    app.kubernetes.io/managed-by: platform-team
+  annotations:
+    platform.example.com/owner: "team-backend"
+    platform.example.com/description: "SPIFFE identity for my-app backend workloads"
+spec:
+  # SPIFFE ID template — uses pod metadata for unique identity
+  # Result: spiffe://example.com/ns/my-app/sa/my-app-backend
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+
+  # Pod selector — which pods get this SPIFFE ID
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+      app.kubernetes.io/component: backend
+
+  # Namespace selector — restrict to specific namespaces
+  namespaceSelector:
+    matchLabels:
+      spiffe.io/workload-identity: "true"
+
+  # X.509 SVID TTL
+  x509SVIDTTL: "4h"
+
+  # JWT SVID TTL (if JWT SVIDs are also needed)
+  jwtSVIDTTL: "30m"
+
+  # DNS names to include in the X.509 SVID
+  dnsNameTemplates:
+    - "{{ .PodMeta.Name }}.my-app.{{ .PodMeta.Namespace }}.svc.cluster.local"
+    - "my-app.{{ .PodMeta.Namespace }}.svc.cluster.local"
+
+  # Downstream — allow this identity to act as an intermediate for nested SPIRE
+  # downstream: true
+
+  # Federated trust domains this workload can authenticate with
+  # federatesWith:
+  #   - "partner.example.org"
+---
+# Frontend service identity
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: my-app-frontend
+  labels:
+    app.kubernetes.io/name: my-app-frontend
+    app.kubernetes.io/component: identity
+    app.kubernetes.io/part-of: spiffe
+    app.kubernetes.io/managed-by: platform-team
+  annotations:
+    platform.example.com/owner: "team-frontend"
+    platform.example.com/description: "SPIFFE identity for my-app frontend workloads"
+spec:
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+      app.kubernetes.io/component: frontend
+  namespaceSelector:
+    matchLabels:
+      spiffe.io/workload-identity: "true"
+  x509SVIDTTL: "4h"
+  dnsNameTemplates:
+    - "{{ .PodMeta.Name }}.my-app-frontend.{{ .PodMeta.Namespace }}.svc.cluster.local"
