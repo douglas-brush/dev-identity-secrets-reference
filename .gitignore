@@ -107,6 +107,9 @@ terraform.rc
 logs/*.log
 !logs/.gitkeep
 
+# === SIRM Sessions ===
+sessions/
+
 # === Build & Output ===
 tmp/
 out/

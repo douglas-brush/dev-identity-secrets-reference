@@ -4,6 +4,7 @@
        drill inventory rotate-check rotate-sops \
        sign verify ceremony-root ceremony-intermediate \
        scan-enhanced entropy-check test-integration \
+       sirm-init sirm-status sirm-seal sirm-report \
        e2e all
 
 SHELL := /bin/bash
@@ -59,6 +60,12 @@ help: ## Show available targets
 	@echo "  $(GREEN)verify$(NC)               Verify artifact signatures"
 	@echo "  $(GREEN)ceremony-root$(NC)        Run root CA key ceremony (dry-run by default)"
 	@echo "  $(GREEN)ceremony-intermediate$(NC) Run intermediate CA ceremony (dry-run by default)"
+	@echo ""
+	@echo "$(CYAN)--- SIRM Session Management ---$(NC)"
+	@echo "  $(GREEN)sirm-init$(NC)            Bootstrap a new SIRM session"
+	@echo "  $(GREEN)sirm-status$(NC)          Show current SIRM session status"
+	@echo "  $(GREEN)sirm-report$(NC)          Generate SIRM session report"
+	@echo "  $(GREEN)sirm-seal$(NC)            Seal current SIRM session (irreversible)"
 	@echo ""
 	@echo "$(CYAN)--- Operations ---$(NC)"
 	@echo "  $(GREEN)drill$(NC)                Run break-glass drill"
@@ -178,6 +185,22 @@ ceremony-root: ## Run root CA key ceremony (dry-run by default)
 ceremony-intermediate: ## Run intermediate CA ceremony (dry-run by default)
 	@echo "$(GREEN)[*] Running intermediate CA ceremony (dry-run)...$(NC)"
 	@./tools/ceremony/intermediate_ceremony.sh --dry-run
+
+# === SIRM Session Management ===
+sirm-init: ## Bootstrap a new SIRM session
+	@echo "$(GREEN)[*] Bootstrapping SIRM session...$(NC)"
+	@./tools/sirm/sirm.sh bootstrap
+
+sirm-status: ## Show current SIRM session status
+	@./tools/sirm/sirm.sh status
+
+sirm-report: ## Generate SIRM session report
+	@echo "$(GREEN)[*] Generating SIRM session report...$(NC)"
+	@./tools/sirm/sirm.sh report
+
+sirm-seal: ## Seal current SIRM session (irreversible)
+	@echo "$(YELLOW)[*] Sealing SIRM session (irreversible)...$(NC)"
+	@./tools/sirm/sirm.sh seal
 
 # === Enhanced Scanning ===
 scan-enhanced: ## Run enhanced secret scanner with DLP patterns

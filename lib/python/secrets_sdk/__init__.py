@@ -34,6 +34,7 @@ from secrets_sdk.models import (
     SecretMetadata,
     TransitResult,
 )
+from secrets_sdk import sirm  # noqa: F401 — SIRM subpackage
 from secrets_sdk.vault import VaultClient
 
 __all__ = [
@@ -64,4 +65,6 @@ __all__ = [
     "VaultConnectionError",
     "VaultLeaseError",
     "VaultSecretNotFound",
+    # SIRM subpackage
+    "sirm",
 ]

@@ -64,7 +64,9 @@ dev-identity-secrets-reference/
 │   ├── incident-playbooks/            # Secret exposure response, break-glass procedures
 │   ├── 16-mtls-workload-identity-guide.md
 │   ├── 17-jit-access-patterns.md
-│   └── 18-key-ceremony-guide.md
+│   ├── 18-key-ceremony-guide.md
+│   ├── 19-sirm-framework.md
+│   └── 20-sirm-session-protocol.md
 ├── diagrams/                          # Mermaid architecture diagrams and decision trees
 ├── lib/python/                        # Python SDK for secrets management integration
 ├── dev/                               # Docker Compose local dev environment
@@ -94,7 +96,8 @@ dev-identity-secrets-reference/
 │   ├── drill/                         # Break-glass drill runner
 │   ├── signing/                       # Artifact signing and verification (cosign/notation)
 │   ├── ceremony/                      # PKI key ceremony scripts (root + intermediate CA)
-│   └── scanning/                      # Enhanced secret scanning and DLP integration
+│   ├── scanning/                      # Enhanced secret scanning and DLP integration
+│   └── sirm/                          # SIRM session management (IR, forensics, audit)
 ├── tests/
 │   ├── opa/                           # Rego policies for secrets + CI compliance
 │   ├── compliance/                    # Control objective validation scripts
@@ -113,6 +116,7 @@ dev-identity-secrets-reference/
 │   ├── jit-access/                    # JIT privileged access patterns
 │   ├── signing/                       # Artifact signing examples (cosign, notation)
 │   ├── dlp/                           # DLP integration guide
+│   ├── sirm/                          # SIRM session examples (basic, IR)
 │   └── policies/                      # Branch protection checklist
 ├── secrets/                           # SOPS-encrypted secrets (dev/staging/prod)
 ├── .sops.yaml                         # Multi-environment SOPS configuration
@@ -302,6 +306,16 @@ make ceremony-intermediate                # Intermediate CA ceremony (dry-run by
 
 End-to-end mutual TLS examples using Vault PKI, Envoy, nginx, and direct application integration. See [`examples/mtls/`](examples/mtls/) and the [mTLS & Workload Identity Guide](docs/16-mtls-workload-identity-guide.md).
 
+### Session Management (SIRM)
+
+Structured session management for incident response, forensic analysis, and security audits. SIRM sessions produce tamper-evident, court-admissible artifacts with chain of custody, SHA-256 evidence verification, and classified findings (F/O/I/H). See [`tools/sirm/`](tools/sirm/), [`examples/sirm/`](examples/sirm/), the [SIRM Framework](docs/19-sirm-framework.md), and the [Session Protocol](docs/20-sirm-session-protocol.md).
+
+```bash
+make sirm-init                          # Bootstrap a new session
+make sirm-report                        # Generate session report
+make sirm-seal                          # Seal session (irreversible, tamper-evident)
+```
+
 ---
 
 ## Contributing
@@ -325,6 +339,8 @@ All contributions must pass the pre-commit hooks (secret scanning, shellcheck, Y
 - [mTLS & Workload Identity Guide](docs/16-mtls-workload-identity-guide.md)
 - [JIT Access Patterns](docs/17-jit-access-patterns.md)
 - [Key Ceremony Guide](docs/18-key-ceremony-guide.md)
+- [SIRM Framework](docs/19-sirm-framework.md)
+- [SIRM Session Protocol](docs/20-sirm-session-protocol.md)
 - [Official References](docs/11-references.md)
 
 ---

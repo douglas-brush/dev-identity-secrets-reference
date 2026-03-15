@@ -199,5 +199,175 @@ def decrypt(file_path: str, output_format: str) -> None:
         click.echo(json.dumps(data, indent=2))
 
 
+# ------------------------------------------------------------------
+# SIRM commands
+# ------------------------------------------------------------------
+
+
+@cli.command("sirm-init")
+@click.option("--operator", required=True, help="Operator identity for the session.")
+@click.option("--classification", default="UNCLASSIFIED", help="Session classification level.")
+@click.option(
+    "--session-dir",
+    type=click.Path(resolve_path=True),
+    default=".",
+    help="Directory for session files (default: current directory).",
+)
+@click.option(
+    "--repo-root",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    default=".",
+    help="Repository root for context loading.",
+)
+@click.option("--json-output", "json_out", is_flag=True, help="Output results as JSON.")
+def sirm_init(operator: str, classification: str, session_dir: str, repo_root: str, json_out: bool) -> None:
+    """Initialize a new SIRM incident response session."""
+    from secrets_sdk.sirm import SIRMBootstrap
+
+    bootstrap = SIRMBootstrap(
+        operator=operator,
+        classification=classification,
+        session_dir=session_dir,
+        repo_root=repo_root,
+    )
+
+    try:
+        session = bootstrap.bootstrap()
+    except RuntimeError as exc:
+        click.secho(f"Bootstrap failed: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    report = bootstrap.report
+
+    if json_out:
+        data = {
+            "session_id": session.session_id,
+            "state": session.state.value,
+            "operator": session.operator,
+            "classification": session.classification,
+            "phases": [p.model_dump(mode="json", exclude={"data"}) for p in report.phases],
+            "overall": report.overall.value,
+        }
+        click.echo(json.dumps(data, indent=2, default=str))
+    else:
+        # Print the dashboard from phase 5
+        for phase in report.phases:
+            if phase.phase == 5 and "dashboard" in phase.data:
+                click.echo(phase.data["dashboard"])
+                break
+        else:
+            click.secho(f"Session {session.session_id} initialized ({session.state.value})", fg="green")
+
+
+@cli.command("sirm-status")
+@click.argument("session_file", type=click.Path(exists=True, resolve_path=True))
+@click.option("--json-output", "json_out", is_flag=True, help="Output results as JSON.")
+def sirm_status(session_file: str, json_out: bool) -> None:
+    """Show status of a SIRM session."""
+    from secrets_sdk.sirm import SIRMSession
+
+    try:
+        session = SIRMSession.load(session_file)
+    except Exception as exc:
+        click.secho(f"Failed to load session: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    record = session.record
+    if json_out:
+        data = {
+            "session_id": record.session_id,
+            "state": record.state.value,
+            "operator": record.operator,
+            "classification": record.classification,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+            "log_entries": len(record.log),
+            "seal_hash": record.seal_hash or None,
+            "sealed_valid": session.verify_seal() if session.is_sealed else None,
+        }
+        click.echo(json.dumps(data, indent=2, default=str))
+    else:
+        color = {
+            "ACTIVE": "green",
+            "INITIALIZING": "yellow",
+            "SUSPENDED": "yellow",
+            "CLOSED": "white",
+            "SEALED": "cyan",
+        }.get(record.state.value, "white")
+        click.secho(f"Session: {record.session_id}", bold=True)
+        click.secho(f"  State: {record.state.value}", fg=color)
+        click.echo(f"  Operator: {record.operator}")
+        click.echo(f"  Classification: {record.classification}")
+        click.echo(f"  Created: {record.created_at.isoformat()}")
+        click.echo(f"  Updated: {record.updated_at.isoformat()}")
+        click.echo(f"  Log entries: {len(record.log)}")
+        if record.seal_hash:
+            valid = session.verify_seal()
+            seal_status = "VALID" if valid else "INVALID"
+            seal_color = "green" if valid else "red"
+            click.secho(f"  Seal: {seal_status} ({record.seal_hash[:16]}...)", fg=seal_color)
+
+
+@cli.command("sirm-seal")
+@click.argument("session_file", type=click.Path(exists=True, resolve_path=True))
+@click.option("--reason", default="", help="Reason for closing and sealing.")
+@click.option("--json-output", "json_out", is_flag=True, help="Output results as JSON.")
+def sirm_seal(session_file: str, reason: str, json_out: bool) -> None:
+    """Close and seal a SIRM session with tamper-evidence hash."""
+    from secrets_sdk.sirm import SIRMSession
+
+    try:
+        session = SIRMSession.load(session_file)
+    except Exception as exc:
+        click.secho(f"Failed to load session: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    try:
+        # Close first if active/suspended
+        if session.state.value in ("ACTIVE", "SUSPENDED"):
+            session.close(reason or "Closing for seal")
+        seal_hash = session.seal()
+    except Exception as exc:
+        click.secho(f"Seal failed: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    if json_out:
+        click.echo(json.dumps({
+            "session_id": session.session_id,
+            "state": session.state.value,
+            "seal_hash": seal_hash,
+        }, indent=2))
+    else:
+        click.secho(f"Session {session.session_id} sealed", fg="cyan", bold=True)
+        click.echo(f"  Hash: {seal_hash}")
+
+
+@cli.command("sirm-report")
+@click.argument("session_file", type=click.Path(exists=True, resolve_path=True))
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json", "markdown"]),
+    default="markdown",
+    help="Report output format.",
+)
+def sirm_report(session_file: str, output_format: str) -> None:
+    """Generate a report for a SIRM session."""
+    from secrets_sdk.sirm import SIRMSession, SessionReport
+
+    try:
+        session = SIRMSession.load(session_file)
+    except Exception as exc:
+        click.secho(f"Failed to load session: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    report = SessionReport(session=session)
+
+    if output_format == "json":
+        click.echo(report.to_json())
+    else:
+        click.echo(report.to_markdown())
+
+
 if __name__ == "__main__":
     cli()

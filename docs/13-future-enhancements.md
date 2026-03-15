@@ -1,5 +1,11 @@
 # Future Enhancements
 
+## Completed in v0.4.0
+
+| Capability | Delivered In |
+|------------|-------------|
+| SIRM session framework for IR, forensics, and audits | `tools/sirm/`, `docs/19-sirm-framework.md`, `docs/20-sirm-session-protocol.md`, `examples/sirm/` |
+
 ## Completed in v0.3.0
 
 The following items from the original roadmap have been implemented:

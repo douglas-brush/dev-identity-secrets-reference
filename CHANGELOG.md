@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-03-15
+### Added
+- SIRM (Security Incident Response Management) session framework (`tools/sirm/`)
+- SIRM architecture document (`docs/19-sirm-framework.md`) — session lifecycle state machine, bootstrap protocol, evidence management, timeline event model with F/O/I/H classification, compliance mapping
+- SIRM session protocol (`docs/20-sirm-session-protocol.md`) — operational runbook with pre-session checklist, bootstrap sequence, evidence registration, session close/seal, break-glass and multi-operator protocols, court-readiness checklist
+- SIRM session examples (`examples/sirm/`) — basic audit session and full incident response session
+- Makefile targets: `sirm-init`, `sirm-status`, `sirm-report`, `sirm-seal`
+
+### Changed
+- README expanded with SIRM section, directory tree entries, and references
+- `docs/13-future-enhancements.md` — SIRM session framework moved from future to completed
+
 ## [0.3.0] - 2026-03-15
 ### Added
 - Artifact signing toolkit (`tools/signing/`) with cosign and notation support
