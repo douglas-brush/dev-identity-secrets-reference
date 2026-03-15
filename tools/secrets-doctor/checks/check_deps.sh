@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # check_deps.sh — Dependency checker for secrets infrastructure tooling
 # Sourced by doctor.sh — uses pass/warn/fail/skip/info functions from parent
 set -euo pipefail

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # credential_age_report.sh — Credential age audit and compliance reporter
 # Checks age of secrets in Vault and Kubernetes, flags policy violations
 # Usage: credential_age_report.sh [--max-age <days>] [--format <text|json|csv>] [--namespace <ns>] [--vault-only] [--k8s-only]

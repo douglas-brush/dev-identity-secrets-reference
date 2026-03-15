@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Dev Identity & Secrets — Developer Workstation Bootstrap

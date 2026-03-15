@@ -1,0 +1,405 @@
+# Reusable workflow for artifact signing and verification in CI.
+# Signs container images after build, verifies before deploy.
+# Supports OIDC keyless signing (Fulcio) and Vault transit KMS.
+#
+# Usage:
+#   jobs:
+#     sign:
+#       uses: ./.github/workflows/sign-and-verify.yml
+#       with:
+#         image_ref: ghcr.io/org/app:v1.2.3
+#         signing_method: keyless
+#
+# The caller MUST request `id-token: write` and `packages: write`
+# permissions for keyless signing and GHCR push.
+
+name: Sign and Verify Artifact
+
+on:
+  workflow_call:
+    inputs:
+      image_ref:
+        description: Container image reference to sign (e.g. ghcr.io/org/app:v1.2.3)
+        required: true
+        type: string
+      image_digest:
+        description: Image digest (sha256:...). If empty, resolved from image_ref.
+        required: false
+        type: string
+        default: ''
+      signing_method:
+        description: 'Signing method: keyless (Fulcio/OIDC), vault-kms (cosign + Vault), vault-transit'
+        required: false
+        type: string
+        default: 'keyless'
+      vault_addr:
+        description: Vault server address (required for vault-kms and vault-transit methods)
+        required: false
+        type: string
+        default: ''
+      vault_role:
+        description: Vault JWT auth role for OIDC authentication
+        required: false
+        type: string
+        default: ''
+      vault_transit_key:
+        description: Vault transit key name (required for vault-kms and vault-transit methods)
+        required: false
+        type: string
+        default: ''
+      vault_auth_path:
+        description: Mount path for Vault JWT auth backend
+        required: false
+        type: string
+        default: 'jwt/github'
+      verify_before_deploy:
+        description: Run verification after signing
+        required: false
+        type: boolean
+        default: true
+      generate_provenance:
+        description: Generate SLSA provenance attestation
+        required: false
+        type: boolean
+        default: true
+      cosign_version:
+        description: Cosign version to install
+        required: false
+        type: string
+        default: 'v2.4.1'
+      certificate_identity:
+        description: Expected certificate identity for keyless verification
+        required: false
+        type: string
+        default: ''
+      certificate_oidc_issuer:
+        description: Expected OIDC issuer for keyless verification
+        required: false
+        type: string
+        default: 'https://token.actions.githubusercontent.com'
+    outputs:
+      signature_digest:
+        description: Digest of the signature artifact
+        value: ${{ jobs.sign.outputs.signature_digest }}
+      verification_result:
+        description: 'Verification result: passed or failed'
+        value: ${{ jobs.verify.outputs.result }}
+      provenance_digest:
+        description: Digest of the SLSA provenance attestation
+        value: ${{ jobs.provenance.outputs.provenance_digest }}
+
+jobs:
+  # ── Sign the artifact ─────────────────────────────────────────────────
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write    # OIDC token for keyless signing or Vault auth
+      packages: write    # Push signature to GHCR
+      contents: read
+    outputs:
+      signature_digest: ${{ steps.sign.outputs.digest }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.image_ref }}" ]]; then
+            echo "::error::image_ref is required"
+            exit 1
+          fi
+          case "${{ inputs.signing_method }}" in
+            keyless|vault-kms|vault-transit) ;;
+            *)
+              echo "::error::Invalid signing_method: ${{ inputs.signing_method }}"
+              exit 1
+              ;;
+          esac
+          if [[ "${{ inputs.signing_method }}" != "keyless" ]]; then
+            if [[ -z "${{ inputs.vault_addr }}" ]]; then
+              echo "::error::vault_addr is required for ${{ inputs.signing_method }}"
+              exit 1
+            fi
+            if [[ -z "${{ inputs.vault_transit_key }}" ]]; then
+              echo "::error::vault_transit_key is required for ${{ inputs.signing_method }}"
+              exit 1
+            fi
+          fi
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ inputs.cosign_version }}
+
+      - name: Authenticate to Vault
+        if: inputs.signing_method != 'keyless'
+        id: vault-auth
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: ${{ inputs.vault_auth_path }}
+          exportToken: true
+
+      - name: Resolve image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.image_digest }}" ]]; then
+            DIGEST="${{ inputs.image_digest }}"
+          else
+            DIGEST=$(cosign triangulate "${{ inputs.image_ref }}" 2>/dev/null | head -1 || \
+                     crane digest "${{ inputs.image_ref }}" 2>/dev/null || \
+                     echo "")
+            if [[ -z "$DIGEST" ]]; then
+              echo "::error::Could not resolve digest for ${{ inputs.image_ref }}"
+              exit 1
+            fi
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Image digest: ${DIGEST}"
+
+      - name: Sign with cosign keyless (Fulcio)
+        if: inputs.signing_method == 'keyless'
+        id: sign-keyless
+        run: |
+          set -euo pipefail
+          cosign sign \
+            --yes \
+            --annotation "github.run_id=${{ github.run_id }}" \
+            --annotation "github.sha=${{ github.sha }}" \
+            --annotation "github.workflow=${{ github.workflow }}" \
+            --annotation "github.actor=${{ github.actor }}" \
+            --annotation "build.timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "${{ inputs.image_ref }}"
+          echo "::notice::Image signed with keyless (Fulcio/Rekor)"
+
+      - name: Sign with cosign + Vault KMS
+        if: inputs.signing_method == 'vault-kms'
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.vault-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          cosign sign \
+            --yes \
+            --key "hashivault://${{ inputs.vault_transit_key }}" \
+            --annotation "github.run_id=${{ github.run_id }}" \
+            --annotation "github.sha=${{ github.sha }}" \
+            --annotation "github.workflow=${{ github.workflow }}" \
+            --annotation "vault.key=${{ inputs.vault_transit_key }}" \
+            --annotation "build.timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "${{ inputs.image_ref }}"
+          echo "::notice::Image signed with cosign + Vault KMS (${{ inputs.vault_transit_key }})"
+
+      - name: Sign with Vault transit directly
+        if: inputs.signing_method == 'vault-transit'
+        id: sign-transit
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.vault-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          DIGEST="${{ steps.digest.outputs.digest }}"
+          INPUT_B64=$(printf '%s' "$DIGEST" | base64 -w0)
+
+          SIGNATURE=$(vault write -format=json \
+            "transit/sign/${{ inputs.vault_transit_key }}" \
+            input="$INPUT_B64" \
+            hash_algorithm=sha2-256 \
+            signature_algorithm=pkcs1v15 | jq -r '.data.signature')
+
+          if [[ -z "$SIGNATURE" || "$SIGNATURE" == "null" ]]; then
+            echo "::error::Vault transit signing returned no signature"
+            exit 1
+          fi
+
+          echo "signature=${SIGNATURE}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Image signed with Vault transit (${{ inputs.vault_transit_key }})"
+
+      - name: Record signature metadata
+        id: sign
+        run: |
+          set -euo pipefail
+          echo "digest=${{ steps.digest.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Signing complete for ${{ inputs.image_ref }}"
+
+  # ── Verify the signature ──────────────────────────────────────────────
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: sign
+    if: inputs.verify_before_deploy
+    permissions:
+      id-token: write
+      packages: read
+      contents: read
+    outputs:
+      result: ${{ steps.verdict.outputs.result }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ inputs.cosign_version }}
+
+      - name: Authenticate to Vault
+        if: inputs.signing_method != 'keyless'
+        id: vault-auth
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          role: ${{ inputs.vault_role }}
+          method: jwt
+          path: ${{ inputs.vault_auth_path }}
+          exportToken: true
+
+      - name: Verify keyless signature
+        if: inputs.signing_method == 'keyless'
+        id: verify-keyless
+        run: |
+          set -euo pipefail
+          VERIFY_ARGS=()
+          if [[ -n "${{ inputs.certificate_identity }}" ]]; then
+            VERIFY_ARGS+=(--certificate-identity "${{ inputs.certificate_identity }}")
+          else
+            # Default to the calling workflow
+            VERIFY_ARGS+=(--certificate-identity-regexp "https://github.com/${{ github.repository }}/.*")
+          fi
+          VERIFY_ARGS+=(--certificate-oidc-issuer "${{ inputs.certificate_oidc_issuer }}")
+
+          cosign verify "${VERIFY_ARGS[@]}" "${{ inputs.image_ref }}" 2>&1
+          echo "::notice::Keyless signature verification passed"
+
+      - name: Verify Vault KMS signature
+        if: inputs.signing_method == 'vault-kms'
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.vault-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --key "hashivault://${{ inputs.vault_transit_key }}" \
+            "${{ inputs.image_ref }}" 2>&1
+          echo "::notice::Vault KMS signature verification passed"
+
+      - name: Verify Vault transit signature
+        if: inputs.signing_method == 'vault-transit'
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr }}
+          VAULT_TOKEN: ${{ steps.vault-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          DIGEST="${{ needs.sign.outputs.signature_digest }}"
+          INPUT_B64=$(printf '%s' "$DIGEST" | base64 -w0)
+
+          # Retrieve the signature from the signing step (in production,
+          # this would be stored as an OCI annotation or separate artifact)
+          RESULT=$(vault write -format=json \
+            "transit/verify/${{ inputs.vault_transit_key }}" \
+            input="$INPUT_B64" \
+            hash_algorithm=sha2-256 \
+            signature_algorithm=pkcs1v15 2>/dev/null || echo '{"data":{"valid":false}}')
+
+          VALID=$(echo "$RESULT" | jq -r '.data.valid')
+          if [[ "$VALID" != "true" ]]; then
+            echo "::error::Vault transit signature verification failed"
+            exit 1
+          fi
+          echo "::notice::Vault transit signature verification passed"
+
+      - name: Set verification verdict
+        id: verdict
+        run: |
+          echo "result=passed" >> "$GITHUB_OUTPUT"
+
+  # ── Generate SLSA provenance attestation ──────────────────────────────
+  provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: sign
+    if: inputs.generate_provenance
+    permissions:
+      id-token: write
+      packages: write
+      contents: read
+    outputs:
+      provenance_digest: ${{ steps.attest.outputs.digest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ inputs.cosign_version }}
+
+      - name: Generate SLSA provenance
+        id: provenance
+        run: |
+          set -euo pipefail
+          cat > /tmp/provenance.json <<EOF
+          {
+            "_type": "https://in-toto.io/Statement/v0.1",
+            "subject": [
+              {
+                "name": "${{ inputs.image_ref }}",
+                "digest": {
+                  "sha256": "${{ needs.sign.outputs.signature_digest }}"
+                }
+              }
+            ],
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "predicate": {
+              "buildDefinition": {
+                "buildType": "https://github.com/actions/runner",
+                "externalParameters": {
+                  "workflow": "${{ github.workflow }}",
+                  "ref": "${{ github.ref }}",
+                  "sha": "${{ github.sha }}",
+                  "repository": "${{ github.repository }}"
+                },
+                "internalParameters": {
+                  "github": {
+                    "event_name": "${{ github.event_name }}",
+                    "run_id": "${{ github.run_id }}",
+                    "run_attempt": "${{ github.run_attempt }}",
+                    "actor": "${{ github.actor }}",
+                    "runner_os": "${{ runner.os }}",
+                    "runner_arch": "${{ runner.arch }}"
+                  }
+                }
+              },
+              "runDetails": {
+                "builder": {
+                  "id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                },
+                "metadata": {
+                  "invocationId": "${{ github.run_id }}/${{ github.run_attempt }}",
+                  "startedOn": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Attest provenance
+        id: attest
+        run: |
+          set -euo pipefail
+          cosign attest \
+            --yes \
+            --predicate /tmp/provenance.json \
+            --type slsaprovenance \
+            "${{ inputs.image_ref }}" 2>&1
+          echo "digest=$(cosign triangulate "${{ inputs.image_ref }}" 2>/dev/null | head -1)" >> "$GITHUB_OUTPUT"
+          echo "::notice::SLSA provenance attestation attached to ${{ inputs.image_ref }}"
+
+      - name: Verify provenance attestation
+        run: |
+          set -euo pipefail
+          cosign verify-attestation \
+            --type slsaprovenance \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ inputs.image_ref }}" 2>&1
+          echo "::notice::Provenance attestation verification passed"

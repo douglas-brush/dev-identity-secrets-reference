@@ -104,7 +104,8 @@ terraform.rc
 !*.tfvars.example
 
 # === Logs & Reports ===
-logs/
+logs/*.log
+!logs/.gitkeep
 
 # === Build & Output ===
 tmp/

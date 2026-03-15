@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # break_glass_drill.sh — Break-glass procedure drill and validation tool
 # Simulates emergency access scenarios non-destructively, validates documentation
 # Usage: break_glass_drill.sh [--dry-run] [--verbose] [--log-file <path>]

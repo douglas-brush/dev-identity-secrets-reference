@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Vault OIDC Login — authenticate to Vault using organizational SSO.

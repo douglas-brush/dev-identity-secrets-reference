@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # rotate_vault_secrets.sh — Vault KV v2 secret rotation orchestrator
 # Identifies secrets exceeding max age and flags them for rotation
 # Usage: rotate_vault_secrets.sh [--dry-run] [--max-age <days>] [--path <prefix>] [--webhook <url>]

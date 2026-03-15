@@ -1,7 +1,9 @@
 .PHONY: help setup validate scan lint audit test doctor tree clean diagrams \
        sdk-install sdk-test sdk-lint \
-       dev-up dev-down dev-setup dev-demo dev-reset \
+       dev-up dev-down dev-setup dev-demo dev-reset dev-proxy \
        drill inventory rotate-check rotate-sops \
+       sign verify ceremony-root ceremony-intermediate \
+       scan-enhanced entropy-check test-integration \
        e2e all
 
 SHELL := /bin/bash
@@ -28,11 +30,14 @@ help: ## Show available targets
 	@echo "$(CYAN)--- Validation & Security ---$(NC)"
 	@echo "  $(GREEN)validate$(NC)             Run all validation checks (scan + lint)"
 	@echo "  $(GREEN)scan$(NC)                 Scan for plaintext secrets"
+	@echo "  $(GREEN)scan-enhanced$(NC)        Run enhanced secret scanner with DLP patterns"
+	@echo "  $(GREEN)entropy-check$(NC)        Run entropy-based high-risk detection"
 	@echo "  $(GREEN)lint$(NC)                 Lint shell scripts and YAML"
 	@echo "  $(GREEN)audit$(NC)               Run full security audit"
 	@echo ""
 	@echo "$(CYAN)--- Testing ---$(NC)"
 	@echo "  $(GREEN)test$(NC)                 Run OPA policy tests and compliance checks"
+	@echo "  $(GREEN)test-integration$(NC)     Run integration tests (SOPS, PKI, SSH CA, Transit)"
 	@echo "  $(GREEN)e2e$(NC)                  Run end-to-end reference validation"
 	@echo "  $(GREEN)all$(NC)                  Full CI check (validate + test + e2e)"
 	@echo ""
@@ -47,6 +52,13 @@ help: ## Show available targets
 	@echo "  $(GREEN)dev-setup$(NC)            Run Vault setup inside dev container"
 	@echo "  $(GREEN)dev-demo$(NC)             Run interactive demo"
 	@echo "  $(GREEN)dev-reset$(NC)            Destroy and recreate dev environment"
+	@echo "  $(GREEN)dev-proxy$(NC)            Start local Vault dev proxy"
+	@echo ""
+	@echo "$(CYAN)--- Signing & Ceremony ---$(NC)"
+	@echo "  $(GREEN)sign$(NC)                 Sign artifacts using cosign/notation"
+	@echo "  $(GREEN)verify$(NC)               Verify artifact signatures"
+	@echo "  $(GREEN)ceremony-root$(NC)        Run root CA key ceremony (dry-run by default)"
+	@echo "  $(GREEN)ceremony-intermediate$(NC) Run intermediate CA ceremony (dry-run by default)"
 	@echo ""
 	@echo "$(CYAN)--- Operations ---$(NC)"
 	@echo "  $(GREEN)drill$(NC)                Run break-glass drill"
@@ -149,6 +161,42 @@ rotate-check: ## Dry-run Vault secret rotation check
 rotate-sops: ## Dry-run SOPS key rotation check
 	@echo "$(GREEN)[*] Checking SOPS key rotation (dry-run)...$(NC)"
 	@./tools/rotate/rotate_sops_keys.sh --dry-run
+
+# === Signing & Ceremony ===
+sign: ## Sign artifacts using cosign/notation
+	@echo "$(GREEN)[*] Signing artifacts...$(NC)"
+	@./tools/signing/sign.sh
+
+verify: ## Verify artifact signatures
+	@echo "$(GREEN)[*] Verifying artifact signatures...$(NC)"
+	@./tools/signing/verify.sh
+
+ceremony-root: ## Run root CA key ceremony (dry-run by default)
+	@echo "$(GREEN)[*] Running root CA ceremony (dry-run)...$(NC)"
+	@./tools/ceremony/root_ceremony.sh --dry-run
+
+ceremony-intermediate: ## Run intermediate CA ceremony (dry-run by default)
+	@echo "$(GREEN)[*] Running intermediate CA ceremony (dry-run)...$(NC)"
+	@./tools/ceremony/intermediate_ceremony.sh --dry-run
+
+# === Enhanced Scanning ===
+scan-enhanced: ## Run enhanced secret scanner with DLP patterns
+	@echo "$(GREEN)[*] Running enhanced secret scan...$(NC)"
+	@./tools/scanning/enhanced_scan.sh
+
+entropy-check: ## Run entropy-based high-risk detection
+	@echo "$(GREEN)[*] Running entropy-based detection...$(NC)"
+	@./tools/scanning/entropy_check.sh
+
+# === Integration Testing ===
+test-integration: ## Run integration tests (SOPS, PKI, SSH CA, Transit)
+	@echo "$(GREEN)[*] Running integration tests...$(NC)"
+	@./tests/integration/run_all.sh
+
+# === Local Dev Proxy ===
+dev-proxy: ## Start local Vault dev proxy
+	@echo "$(GREEN)[*] Starting local Vault dev proxy...$(NC)"
+	@./platform/local-dev/vault_proxy.sh
 
 # === Diagnostics ===
 doctor: ## Run secrets-doctor diagnostic tool

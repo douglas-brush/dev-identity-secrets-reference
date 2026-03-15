@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Application Onboarding — creates Vault policy and generates platform-specific

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # rotate_sops_keys.sh — SOPS encryption key rotation tool
 # Re-encrypts all .enc.yaml files with updated recipients from .sops.yaml
 # Usage: rotate_sops_keys.sh [--dry-run] [--env <environment>] [--verbose] [--log-file <path>]

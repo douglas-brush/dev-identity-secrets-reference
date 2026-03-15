@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # check_sops.sh — SOPS configuration validator
 # Sourced by doctor.sh — uses pass/warn/fail/skip/info functions from parent
 set -euo pipefail

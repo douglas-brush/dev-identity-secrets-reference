@@ -1,0 +1,255 @@
+# Custom gitleaks configuration for dev-identity-secrets-reference.
+# Extends default rules with 20+ patterns for secrets, tokens, and credentials.
+# Usage: gitleaks detect --config tools/scanning/custom-gitleaks.toml
+
+title = "Custom Gitleaks Config — Secret Scanning"
+
+[extend]
+# Inherit all default gitleaks rules
+useDefault = true
+
+# ============================================================================
+# Vault / HashiCorp
+# ============================================================================
+
+[[rules]]
+id = "vault-token"
+description = "HashiCorp Vault Token"
+regex = '''(?i)\b(hvs\.[A-Za-z0-9_-]{24,})'''
+keywords = ["hvs."]
+
+[[rules]]
+id = "vault-batch-token"
+description = "HashiCorp Vault Batch Token"
+regex = '''(?i)\b(hvb\.[A-Za-z0-9_-]{24,})'''
+keywords = ["hvb."]
+
+[[rules]]
+id = "vault-service-token"
+description = "HashiCorp Vault Legacy/Service Token"
+regex = '''(?i)(vault_token|VAULT_TOKEN)\s*[=:]\s*["']?([A-Za-z0-9_.-]{20,})["']?'''
+keywords = ["vault_token", "VAULT_TOKEN"]
+
+[[rules]]
+id = "hashicorp-license-key"
+description = "HashiCorp License Key"
+regex = '''(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.lic'''
+keywords = [".lic"]
+
+# ============================================================================
+# SOPS / Age
+# ============================================================================
+
+[[rules]]
+id = "sops-age-private-key"
+description = "SOPS Age Private Key"
+regex = '''AGE-SECRET-KEY-[A-Z0-9]{59}'''
+keywords = ["AGE-SECRET-KEY-"]
+
+# ============================================================================
+# Slack
+# ============================================================================
+
+[[rules]]
+id = "slack-webhook-url"
+description = "Slack Incoming Webhook URL"
+regex = '''https://hooks\.slack\.com/services/T[A-Z0-9]{8,}/B[A-Z0-9]{8,}/[A-Za-z0-9]{24}'''
+keywords = ["hooks.slack.com"]
+
+[[rules]]
+id = "slack-bot-token"
+description = "Slack Bot/User Token"
+regex = '''xox[baprs]-[0-9]{10,}-[0-9A-Za-z]{10,}'''
+keywords = ["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"]
+
+# ============================================================================
+# SendGrid
+# ============================================================================
+
+[[rules]]
+id = "sendgrid-api-key"
+description = "SendGrid API Key"
+regex = '''SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}'''
+keywords = ["SG."]
+
+# ============================================================================
+# Twilio
+# ============================================================================
+
+[[rules]]
+id = "twilio-api-key"
+description = "Twilio API Key"
+regex = '''SK[0-9a-fA-F]{32}'''
+keywords = ["SK"]
+[rules.allowlist]
+regexes = ['''SK[0]{32}''']
+
+[[rules]]
+id = "twilio-account-sid"
+description = "Twilio Account SID"
+regex = '''AC[0-9a-fA-F]{32}'''
+keywords = ["AC"]
+
+# ============================================================================
+# Stripe
+# ============================================================================
+
+[[rules]]
+id = "stripe-secret-key"
+description = "Stripe Secret Key"
+regex = '''sk_(test|live)_[0-9a-zA-Z]{24,99}'''
+keywords = ["sk_test_", "sk_live_"]
+
+[[rules]]
+id = "stripe-publishable-key"
+description = "Stripe Publishable Key"
+regex = '''pk_(test|live)_[0-9a-zA-Z]{24,99}'''
+keywords = ["pk_test_", "pk_live_"]
+
+[[rules]]
+id = "stripe-restricted-key"
+description = "Stripe Restricted API Key"
+regex = '''rk_(test|live)_[0-9a-zA-Z]{24,99}'''
+keywords = ["rk_test_", "rk_live_"]
+
+# ============================================================================
+# Database Connection Strings
+# ============================================================================
+
+[[rules]]
+id = "postgres-connection-string"
+description = "PostgreSQL Connection String"
+regex = '''postgres(ql)?://[^\s:]+:[^\s@]+@[^\s/]+[^\s]*'''
+keywords = ["postgres://", "postgresql://"]
+
+[[rules]]
+id = "mysql-connection-string"
+description = "MySQL Connection String"
+regex = '''mysql://[^\s:]+:[^\s@]+@[^\s/]+[^\s]*'''
+keywords = ["mysql://"]
+
+[[rules]]
+id = "mongodb-connection-string"
+description = "MongoDB Connection String"
+regex = '''mongodb(\+srv)?://[^\s:]+:[^\s@]+@[^\s/]+[^\s]*'''
+keywords = ["mongodb://", "mongodb+srv://"]
+
+[[rules]]
+id = "redis-connection-string"
+description = "Redis Connection String with Password"
+regex = '''redis://:[^\s@]+@[^\s/]+[^\s]*'''
+keywords = ["redis://"]
+
+# ============================================================================
+# JWT / OAuth
+# ============================================================================
+
+[[rules]]
+id = "jwt-token"
+description = "JSON Web Token"
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}'''
+entropy = 3.5
+keywords = ["eyJ"]
+[rules.allowlist]
+regexes = ['''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiIxMjM0NTY3ODkw''']
+
+[[rules]]
+id = "oauth-client-secret"
+description = "OAuth Client Secret"
+regex = '''(?i)(client_secret|client\.secret|oauth_secret)\s*[=:]\s*["']?([A-Za-z0-9_-]{20,})["']?'''
+keywords = ["client_secret", "client.secret", "oauth_secret"]
+
+# ============================================================================
+# Cryptographic Key Material
+# ============================================================================
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM-Encoded Private Key"
+regex = '''-----BEGIN (RSA |EC |DSA |ED25519 |OPENSSH )?PRIVATE KEY-----'''
+keywords = ["BEGIN", "PRIVATE KEY"]
+
+[[rules]]
+id = "pkcs12-base64"
+description = "PKCS12/PFX Certificate (base64-encoded)"
+regex = '''(?i)(pkcs12|pfx|p12)[_-]?(data|cert|file|content)\s*[=:]\s*["']?[A-Za-z0-9+/=]{50,}["']?'''
+keywords = ["pkcs12", "pfx", "p12"]
+
+[[rules]]
+id = "ssh-private-key"
+description = "SSH Private Key (OpenSSH format)"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+keywords = ["BEGIN OPENSSH PRIVATE KEY"]
+
+# ============================================================================
+# AWS
+# ============================================================================
+
+[[rules]]
+id = "aws-session-token"
+description = "AWS Session Token"
+regex = '''(?i)(aws_session_token|AWS_SESSION_TOKEN)\s*[=:]\s*["']?([A-Za-z0-9/+=]{100,})["']?'''
+keywords = ["aws_session_token", "AWS_SESSION_TOKEN"]
+
+[[rules]]
+id = "aws-mfa-device"
+description = "AWS MFA Serial with Secret"
+regex = '''(?i)arn:aws:iam::\d{12}:mfa/\S+\s*.*\s*(secret|seed)\s*[=:]\s*\S+'''
+keywords = ["arn:aws:iam", "mfa"]
+
+# ============================================================================
+# Azure
+# ============================================================================
+
+[[rules]]
+id = "azure-sas-token"
+description = "Azure Shared Access Signature Token"
+regex = '''(?i)[?&]sig=[A-Za-z0-9%+/=]{30,}'''
+keywords = ["sig="]
+
+[[rules]]
+id = "azure-storage-key"
+description = "Azure Storage Account Key"
+regex = '''(?i)(AccountKey|account_key)\s*[=:]\s*["']?[A-Za-z0-9+/=]{88}["']?'''
+keywords = ["AccountKey", "account_key"]
+
+# ============================================================================
+# GCP
+# ============================================================================
+
+[[rules]]
+id = "gcp-service-account-json"
+description = "GCP Service Account Key JSON"
+regex = '''(?i)"type"\s*:\s*"service_account"'''
+keywords = ["service_account"]
+
+[[rules]]
+id = "gcp-oauth-refresh-token"
+description = "GCP OAuth Refresh Token"
+regex = '''(?i)"refresh_token"\s*:\s*"1//[A-Za-z0-9_-]{40,}"'''
+keywords = ["refresh_token", "1//"]
+
+# ============================================================================
+# Global Allowlists
+# ============================================================================
+
+[allowlist]
+description = "Global allowlist for test fixtures, examples, and documentation"
+paths = [
+  '''tests/fixtures/''',
+  '''tests/unit/''',
+  '''tests/integration/''',
+  '''examples/.*/.*\.example''',
+  '''examples/.*/.*\.template''',
+  '''\.secretsignore$''',
+  '''docs/.*\.md$''',
+  '''diagrams/''',
+  '''tools/scanning/custom-gitleaks\.toml$''',
+  '''bootstrap/scripts/check_no_plaintext_secrets\.sh$''',
+  '''\.pre-commit-config\.yaml$''',
+  '''.*\.enc\.(yaml|yml|json)$''',
+  '''platform/vault/policies/''',
+  '''platform/vault/examples/''',
+  '''.*\.rego$''',
+  '''CHANGELOG\.md$''',
+]

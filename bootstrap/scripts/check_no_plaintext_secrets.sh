@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Enhanced plaintext secret detection.
@@ -65,10 +67,10 @@ scan_file() {
 
   for name in "${!PATTERNS[@]}"; do
     local pattern="${PATTERNS[$name]}"
-    if grep -EIqP "$pattern" "$file" 2>/dev/null || grep -EIq "$pattern" "$file" 2>/dev/null; then
+    if grep -EIqP -e "$pattern" "$file" 2>/dev/null || grep -EIq -e "$pattern" "$file" 2>/dev/null; then
       FAIL=1
       local line_info
-      line_info=$(grep -EInP "$pattern" "$file" 2>/dev/null | head -3 || grep -EIn "$pattern" "$file" 2>/dev/null | head -3)
+      line_info=$(grep -EInP -e "$pattern" "$file" 2>/dev/null | head -3 || grep -EIn -e "$pattern" "$file" 2>/dev/null | head -3)
       if [[ "$FORMAT" == "json" ]]; then
         FINDINGS+=("{\"file\":\"$file\",\"pattern\":\"$name\",\"lines\":\"$(echo "$line_info" | head -1 | cut -d: -f1)\"}")
       else

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # secrets-doctor — Comprehensive CLI diagnostic tool for secrets infrastructure
 # Usage: doctor.sh [deps|audit|vault|k8s|sops|git|all] [--no-color] [--json] [--verbose]
 set -euo pipefail

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # check_k8s.sh — Kubernetes secrets configuration validator
 # Sourced by doctor.sh — uses pass/warn/fail/skip/info functions from parent
 set -euo pipefail

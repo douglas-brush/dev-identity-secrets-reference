@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 #!/usr/bin/env sh
 # Vault bootstrap script — configures all secret engines, auth methods,
 # policies, and demo data for the local dev environment.

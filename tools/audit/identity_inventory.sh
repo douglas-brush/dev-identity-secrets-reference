@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # identity_inventory.sh — Non-human identity inventory and audit tool
 # Enumerates service accounts, machine identities, and API credentials across platforms
 # Usage: identity_inventory.sh [--json] [--namespace <ns>] [--verbose]

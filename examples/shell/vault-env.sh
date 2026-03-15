@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # vault-env.sh — Authenticate to Vault, fetch secrets, export as env vars,
 # then exec the wrapped command with those secrets available.
 #

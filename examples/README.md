@@ -118,6 +118,7 @@ cd shell
 The `examples/` directory also contains other reference material:
 
 - `app/` — Application onboarding guide for the secrets platform
+- `mtls/` — Mutual TLS patterns: Vault PKI setup, Envoy sidecar, nginx, and direct app examples (Python, Go)
 - `policies/` — Branch protection checklists
 - `siem/` — Vault audit log integration configs for Splunk and ELK
 - `vm/` — Cloud-init and systemd configurations for Vault Agent on VMs

@@ -8,12 +8,20 @@ repos:
     rev: v8.18.4
     hooks:
       - id: gitleaks
+        args: ['--config', 'tools/scanning/custom-gitleaks.toml']
 
   - repo: local
     hooks:
       - id: no-plaintext-secrets
         name: Block plaintext secrets in repository
         entry: ./bootstrap/scripts/check_no_plaintext_secrets.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: entropy-check
+        name: Entropy-based secret detection
+        entry: ./tools/scanning/entropy_check.sh --threshold 4.5
         language: system
         pass_filenames: false
         always_run: true
@@ -37,11 +45,24 @@ repos:
         language: system
         pass_filenames: false
 
+      - id: file-permission-check
+        name: Verify private key file permissions
+        entry: bash -c 'fail=0; for f in $(find . -type f \( -name "*.pem" -o -name "*.key" -o -name "*.p12" -o -name "*.pfx" \) -not -path "./.git/*" 2>/dev/null); do p=$(stat -f "%A" "$f" 2>/dev/null || stat -c "%a" "$f" 2>/dev/null); if [ "$p" != "600" ] && [ "$p" != "400" ]; then echo "[!] $f has permissions $p (should be 600 or 400)"; fail=1; fi; done; exit $fail'
+        language: system
+        pass_filenames: false
+
       - id: sops-encrypted-check
         name: Verify SOPS encryption on secrets files
         entry: bash -c 'for f in $(git diff --cached --name-only | grep -E "secrets/.*\.(yaml|yml|json)$" | grep "\.enc\."); do if ! grep -q "sops:" "$f" 2>/dev/null && ! grep -q "\"sops\":" "$f" 2>/dev/null; then echo "[!] $f appears to be in secrets/ but is not SOPS-encrypted"; exit 1; fi; done'
         language: system
         pass_filenames: false
+
+      - id: sops-validation
+        name: Validate SOPS-encrypted files are actually encrypted
+        entry: bash -c 'fail=0; for f in $(find . -name "*.enc.yaml" -o -name "*.enc.yml" -o -name "*.enc.json" -not -path "./.git/*" 2>/dev/null); do if ! grep -qE "^sops:|\"sops\":" "$f" 2>/dev/null; then echo "[!] $f has .enc extension but lacks SOPS metadata — may be plaintext"; fail=1; fi; done; exit $fail'
+        language: system
+        pass_filenames: false
+        always_run: true
 
   # === YAML/JSON Validation ===
   - repo: https://github.com/pre-commit/pre-commit-hooks

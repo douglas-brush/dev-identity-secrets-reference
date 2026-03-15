@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # validate_reference.sh — Local validation harness for the Dev Identity & Secrets reference
 #
 # Validates all configuration files, policies, scripts, and documentation

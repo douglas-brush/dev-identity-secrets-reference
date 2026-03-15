@@ -1,0 +1,286 @@
+# Envoy Sidecar Configuration for mTLS
+#
+# This configuration runs Envoy as a sidecar proxy that handles mTLS
+# transparently for the application. The application listens on plaintext
+# localhost; Envoy terminates inbound mTLS and originates outbound mTLS.
+#
+# Certificate management uses SDS (Secret Discovery Service) so that
+# Envoy picks up rotated certificates without restart. In production,
+# the SDS server is typically:
+#   - Vault Agent (via template rendering + SDS API)
+#   - SPIRE Agent (native SDS support)
+#   - Istio Pilot (if running in a mesh)
+#
+# For standalone Vault integration, Vault Agent writes certificates to
+# disk and Envoy watches the files via its filesystem-based SDS provider.
+#
+# Architecture:
+#
+#   External Client ──mTLS──▶ Envoy :8443 ──plaintext──▶ App :8080
+#   App ──plaintext──▶ Envoy :9443 ──mTLS──▶ Upstream Service
+#
+
+# ---------------------------------------------------------------------------
+# Node identity — identifies this Envoy instance in logs and tracing
+# ---------------------------------------------------------------------------
+node:
+  id: web-api-sidecar
+  cluster: web-api
+
+# ---------------------------------------------------------------------------
+# Static resources — listeners, clusters, and secrets
+# ---------------------------------------------------------------------------
+static_resources:
+
+  # =========================================================================
+  # LISTENERS
+  # =========================================================================
+  listeners:
+
+    # -----------------------------------------------------------------------
+    # Inbound listener — terminates mTLS from external clients
+    # -----------------------------------------------------------------------
+    - name: inbound_mtls
+      address:
+        socket_address:
+          address: 0.0.0.0       # Accept connections from any interface
+          port_value: 8443       # External-facing mTLS port
+
+      filter_chains:
+        - filters:
+            # HTTP connection manager routes requests to the local app
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: inbound
+                codec_type: AUTO
+
+                # Access logging — structured JSON for SIEM ingestion
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          duration_ms: "%DURATION%"
+                          peer_subject: "%DOWNSTREAM_PEER_SUBJECT%"
+                          peer_serial: "%DOWNSTREAM_PEER_SERIAL%"
+                          tls_version: "%DOWNSTREAM_TLS_VERSION%"
+                          tls_cipher: "%DOWNSTREAM_TLS_CIPHER%"
+
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: local_app
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: local_app
+                            timeout: 30s
+
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+          # -------------------------------------------------------------------
+          # Downstream TLS context — server-side TLS with client cert required
+          # -------------------------------------------------------------------
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+
+              # Require client certificates — this is what makes it "mutual" TLS
+              require_client_certificate: true
+
+              common_tls_context:
+                # Minimum TLS version — TLS 1.2 is the floor, prefer 1.3
+                tls_params:
+                  tls_minimum_protocol_version: TLSv1_2
+                  tls_maximum_protocol_version: TLSv1_3
+                  cipher_suites:
+                    - "[ECDHE-ECDSA-AES256-GCM-SHA384|ECDHE-RSA-AES256-GCM-SHA384]"
+                    - "[ECDHE-ECDSA-AES128-GCM-SHA256|ECDHE-RSA-AES128-GCM-SHA256]"
+
+                # SDS: Server certificate — Envoy's own identity
+                # The SDS server provides the certificate and key. When the
+                # certificate is rotated, the SDS server pushes the update
+                # and Envoy reloads without restart.
+                tls_certificate_sds_secret_configs:
+                  - name: server_cert
+                    sds_config:
+                      resource_api_version: V3
+                      path_config_source:
+                        path: /etc/envoy/sds/server-cert.json
+                        watched_directory:
+                          path: /etc/envoy/sds
+
+                # Validation context — which CAs to trust for client certs
+                # Uses SDS so the CA bundle can also be rotated dynamically
+                combined_validation_context:
+                  default_validation_context:
+                    # Optional: restrict which client SANs are accepted
+                    # Uncomment to only allow specific client identities:
+                    # match_typed_subject_alt_names:
+                    #   - san_type: DNS
+                    #     matcher:
+                    #       suffix: ".internal"
+                    trust_chain_verification: VERIFY_TRUST_CHAIN
+                  validation_context_sds_secret_config:
+                    name: trusted_ca
+                    sds_config:
+                      resource_api_version: V3
+                      path_config_source:
+                        path: /etc/envoy/sds/trusted-ca.json
+                        watched_directory:
+                          path: /etc/envoy/sds
+
+    # -----------------------------------------------------------------------
+    # Outbound listener — originates mTLS to upstream services
+    # Applications connect to localhost:9443 in plaintext; Envoy wraps
+    # the connection in mTLS before forwarding to the upstream.
+    # -----------------------------------------------------------------------
+    - name: outbound_mtls
+      address:
+        socket_address:
+          address: 127.0.0.1     # Only accept connections from localhost
+          port_value: 9443       # Application connects here in plaintext
+
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: outbound
+                cluster: upstream_service
+
+  # =========================================================================
+  # CLUSTERS — backend service definitions
+  # =========================================================================
+  clusters:
+
+    # -----------------------------------------------------------------------
+    # Local application — plaintext connection to the co-located app
+    # -----------------------------------------------------------------------
+    - name: local_app
+      type: STATIC
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: local_app
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 8080    # Application's plaintext port
+
+    # -----------------------------------------------------------------------
+    # Upstream service — mTLS connection to another service
+    # -----------------------------------------------------------------------
+    - name: upstream_service
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: upstream_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: upstream-service.internal
+                      port_value: 8443
+
+      # -------------------------------------------------------------------
+      # Upstream TLS context — client-side mTLS when connecting upstream
+      # -------------------------------------------------------------------
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+
+          # SNI must match the upstream's certificate SAN
+          sni: upstream-service.internal
+
+          common_tls_context:
+            tls_params:
+              tls_minimum_protocol_version: TLSv1_2
+              tls_maximum_protocol_version: TLSv1_3
+
+            # Client certificate — presented to the upstream for mutual auth
+            tls_certificate_sds_secret_configs:
+              - name: client_cert
+                sds_config:
+                  resource_api_version: V3
+                  path_config_source:
+                    path: /etc/envoy/sds/client-cert.json
+                    watched_directory:
+                      path: /etc/envoy/sds
+
+            # Upstream CA validation — verify the upstream's server cert
+            combined_validation_context:
+              default_validation_context:
+                trust_chain_verification: VERIFY_TRUST_CHAIN
+              validation_context_sds_secret_config:
+                name: trusted_ca
+                sds_config:
+                  resource_api_version: V3
+                  path_config_source:
+                    path: /etc/envoy/sds/trusted-ca.json
+                    watched_directory:
+                      path: /etc/envoy/sds
+
+# ---------------------------------------------------------------------------
+# Admin interface — for health checks and stats scraping
+# ---------------------------------------------------------------------------
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1       # Admin only on localhost
+      port_value: 9901
+
+# ---------------------------------------------------------------------------
+# SDS File Format Reference
+# ---------------------------------------------------------------------------
+#
+# Envoy's filesystem SDS provider watches JSON files for certificate updates.
+# Vault Agent (or any automation) writes these files; Envoy reloads on change.
+#
+# server-cert.json / client-cert.json:
+# {
+#   "resources": [{
+#     "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+#     "name": "server_cert",
+#     "tls_certificate": {
+#       "certificate_chain": { "filename": "/etc/envoy/certs/server.pem" },
+#       "private_key": { "filename": "/etc/envoy/certs/server-key.pem" }
+#     }
+#   }]
+# }
+#
+# trusted-ca.json:
+# {
+#   "resources": [{
+#     "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+#     "name": "trusted_ca",
+#     "validation_context": {
+#       "trusted_ca": { "filename": "/etc/envoy/certs/ca-bundle.pem" }
+#     }
+#   }]
+# }
+#
+# Vault Agent Template Example:
+#
+#   template {
+#     source      = "/etc/vault-agent/templates/server-cert.tpl"
+#     destination = "/etc/envoy/certs/server.pem"
+#     perms       = "0644"
+#     command     = "touch /etc/envoy/sds/server-cert.json"  # triggers SDS reload
+#   }

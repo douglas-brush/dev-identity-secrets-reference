@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # setup-complete.sh — Complete Vault setup: engines, auth, policies, PKI, SSH, Transit, DB
 # Run against a freshly initialized and unsealed Vault cluster.
 set -euo pipefail

@@ -1,0 +1,158 @@
+# =============================================================================
+# direnv .envrc — Vault-backed developer environment
+# Copy to your project root: cp platform/local-dev/envrc.example .envrc
+# Then: direnv allow
+#
+# This file NEVER writes secrets to disk. All secret material stays in
+# environment variables and process substitution.
+# =============================================================================
+
+# --- Core Identity ---
+export APP_NAME="$(basename "$PWD")"
+export APP_ENV="dev"
+export LOG_LEVEL="debug"
+
+# =============================================================================
+# Section 1: Vault Connectivity
+# VAULT_ADDR points to your Vault cluster. In local dev this is typically
+# a dev-mode server on localhost or a shared team instance.
+# =============================================================================
+export VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
+
+# Enterprise namespaces — uncomment if your org uses them
+# export VAULT_NAMESPACE="admin/dev"
+
+# =============================================================================
+# Section 2: Vault Authentication
+# Strategy: check for an existing valid token first (from a previous login
+# or a Vault agent). If none, fall back to OIDC browser login.
+# The token is never written to ~/.vault-token — it stays in VAULT_TOKEN.
+# =============================================================================
+_vault_ensure_token() {
+  if ! command -v vault &>/dev/null; then
+    log_error "[direnv] vault CLI not found — install from https://developer.hashicorp.com/vault/install"
+    return 1
+  fi
+
+  # Check existing token validity
+  if vault token lookup &>/dev/null 2>&1; then
+    local ttl
+    ttl=$(vault token lookup -format=json 2>/dev/null | jq -r '.data.ttl // 0')
+    if [[ "$ttl" -gt 300 ]]; then
+      log_status "[direnv] Vault token valid (TTL: ${ttl}s)"
+      return 0
+    fi
+    # Token expiring soon — try renewal before re-login
+    if vault token renew &>/dev/null 2>&1; then
+      log_status "[direnv] Vault token renewed"
+      return 0
+    fi
+  fi
+
+  # No valid token — attempt OIDC login
+  log_status "[direnv] Authenticating to Vault via OIDC..."
+  local login_json
+  login_json=$(vault login -format=json -method=oidc \
+    -path="${VAULT_AUTH_PATH:-oidc}" \
+    role="${VAULT_ROLE:-developer}" \
+    -no-store 2>/dev/null) || {
+    log_error "[direnv] OIDC login failed — run manually: vault login -method=oidc"
+    return 1
+  }
+
+  # Extract token into env only — never hits disk because of -no-store
+  export VAULT_TOKEN
+  VAULT_TOKEN=$(echo "$login_json" | jq -r '.auth.client_token')
+  log_status "[direnv] Authenticated via OIDC"
+}
+
+_vault_ensure_token
+
+# =============================================================================
+# Section 3: SOPS / Age Configuration
+# SOPS_AGE_KEY_FILE points to your local age private key. Generate one with:
+#   mkdir -p ~/.config/sops/age && age-keygen -o ~/.config/sops/age/keys.txt
+# =============================================================================
+export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-${HOME}/.config/sops/age/keys.txt}"
+
+# Auto-discover recipients from .sops.yaml if present
+if [[ -f ".sops.yaml" ]] && command -v yq &>/dev/null; then
+  _age_recipients=$(yq -r '.creation_rules[0].age // empty' .sops.yaml 2>/dev/null)
+  if [[ -n "$_age_recipients" ]]; then
+    export SOPS_AGE_RECIPIENTS="$_age_recipients"
+  fi
+  unset _age_recipients
+fi
+
+# =============================================================================
+# Section 4: Fetch Dev Secrets from Vault into Environment
+# Uses process substitution so decrypted values never touch the filesystem.
+# Each secret is read from Vault KV v2 and exported directly.
+# =============================================================================
+_vault_fetch_secrets() {
+  if [[ -z "${VAULT_TOKEN:-}" ]]; then
+    return 0  # No token — skip silently, already warned above
+  fi
+
+  local kv_path="kv/data/${APP_ENV}/apps/${APP_NAME}/config"
+
+  # Fetch KV secrets — all keys exported with APP_ prefix
+  if vault kv get -format=json "$kv_path" &>/dev/null 2>&1; then
+    local kv_json
+    kv_json=$(vault kv get -format=json "$kv_path")
+
+    # Process substitution: pipe JSON through jq, eval export statements
+    # No intermediate files are created
+    eval "$(echo "$kv_json" | jq -r '
+      .data.data | to_entries[] |
+      "export APP_\(.key | ascii_upcase)=\(.value | @sh)"
+    ')"
+    log_status "[direnv] Loaded KV secrets from $kv_path"
+  fi
+
+  # Fetch dynamic database credentials if the role exists
+  local db_role="${APP_ENV}-${APP_NAME}"
+  if vault read -format=json "database/creds/${db_role}" &>/dev/null 2>&1; then
+    local db_json
+    db_json=$(vault read -format=json "database/creds/${db_role}")
+    export DB_USERNAME DB_PASSWORD DB_LEASE_ID
+    DB_USERNAME=$(echo "$db_json" | jq -r '.data.username')
+    DB_PASSWORD=$(echo "$db_json" | jq -r '.data.password')
+    DB_LEASE_ID=$(echo "$db_json" | jq -r '.lease_id')
+    log_status "[direnv] Dynamic DB creds acquired (user: ${DB_USERNAME})"
+  fi
+}
+
+_vault_fetch_secrets
+
+# =============================================================================
+# Section 5: SOPS Encrypted Config
+# If a secrets.enc.yaml exists, decrypt it into env vars via process
+# substitution. The decrypted content is piped directly to eval.
+# =============================================================================
+if [[ -f "secrets.enc.yaml" ]] && command -v sops &>/dev/null; then
+  eval "$(sops -d --output-type dotenv secrets.enc.yaml 2>/dev/null)" || \
+    log_error "[direnv] SOPS decryption failed — check your age key"
+fi
+
+# =============================================================================
+# Section 6: Local Overrides
+# A .env file can override any of the above for developer-specific tweaks.
+# This file should be in .gitignore.
+# =============================================================================
+dotenv_if_exists .env
+
+# =============================================================================
+# Section 7: PATH and Tool Setup
+# =============================================================================
+PATH_add bin
+PATH_add node_modules/.bin
+PATH_add .venv/bin
+
+# --- Kubernetes (optional) ---
+# export KUBECONFIG="${HOME}/.kube/config"
+# export K8S_NAMESPACE="${APP_NAME}"
+
+# --- Docker ---
+# export COMPOSE_PROJECT_NAME="${APP_NAME}"
+# export DOCKER_BUILDKIT=1

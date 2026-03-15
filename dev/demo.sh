@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#!/usr/bin/env bash
 # Interactive demo of all Vault secret engine patterns.
 # Usage: ./demo.sh [--auto]
 set -euo pipefail

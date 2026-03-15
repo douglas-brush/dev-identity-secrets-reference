@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2026-03-15
+### Added
+- Artifact signing toolkit (`tools/signing/`) with cosign and notation support
+- mTLS examples (`examples/mtls/`) — Vault PKI, Envoy, nginx, direct app patterns
+- JIT privileged access patterns (`examples/jit-access/`)
+- Key ceremony scripts (`tools/ceremony/`) for root and intermediate CA with HSM support
+- Enhanced secret scanning and DLP integration (`tools/scanning/`, `examples/dlp/`)
+- Local dev patterns (`platform/local-dev/`) — direnv, env templates, local Vault proxy
+- Expanded integration tests (`tests/integration/`) — SOPS, PKI, SSH CA, Transit
+- mTLS & Workload Identity Guide (`docs/16-mtls-workload-identity-guide.md`)
+- JIT Access Patterns doc (`docs/17-jit-access-patterns.md`)
+- Key Ceremony Guide (`docs/18-key-ceremony-guide.md`)
+- Artifact signing examples (`examples/signing/`)
+- Makefile targets: `sign`, `verify`, `ceremony-root`, `ceremony-intermediate`, `scan-enhanced`, `entropy-check`, `test-integration`, `dev-proxy`
+
+### Changed
+- README expanded with new directory tree entries, artifact signing / mTLS / ceremony sections, and updated references
+- `docs/13-future-enhancements.md` rewritten — completed items marked done, new future items added (Go SDK, TypeScript SDK, Terraform provider, GUI dashboard)
+- Diagram SVGs regenerated from updated Mermaid sources
+
+### Fixed
+- `.venv` and `.pytest_cache` removed from version tracking
+
 ## [0.2.0] - 2026-03-15
 ### Added
 - Python SDK (`lib/python/secrets_sdk/`)

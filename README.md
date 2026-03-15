@@ -61,7 +61,10 @@ This model is platform-agnostic. Implement each plane with whatever tooling fits
 dev-identity-secrets-reference/
 ├── docs/                              # Architecture, threat model, compliance, runbooks
 │   ├── compliance/                    # NIST, ISO 27001, OWASP, CSA, CIS, SOC2, PCI DSS, CISA ZT
-│   └── incident-playbooks/            # Secret exposure response, break-glass procedures
+│   ├── incident-playbooks/            # Secret exposure response, break-glass procedures
+│   ├── 16-mtls-workload-identity-guide.md
+│   ├── 17-jit-access-patterns.md
+│   └── 18-key-ceremony-guide.md
 ├── diagrams/                          # Mermaid architecture diagrams and decision trees
 ├── lib/python/                        # Python SDK for secrets management integration
 ├── dev/                               # Docker Compose local dev environment
@@ -77,7 +80,7 @@ dev-identity-secrets-reference/
 │   ├── azure-pipelines/               # Azure DevOps pipeline templates
 │   ├── jenkins/                       # Jenkins pipeline templates
 │   ├── circleci/                      # CircleCI pipeline templates
-│   └── local-dev/                     # direnv, env templates, encrypted config examples
+│   └── local-dev/                     # direnv, env templates, local Vault proxy
 ├── bootstrap/scripts/                 # Developer automation
 │   ├── bootstrap_dev.sh               # Workstation setup
 │   ├── check_no_plaintext_secrets.sh  # 15+ secret pattern scanner
@@ -88,11 +91,14 @@ dev-identity-secrets-reference/
 │   ├── secrets-doctor/                # Diagnostic CLI: deps, SOPS, Vault, git health
 │   ├── rotate/                        # SOPS key + Vault secret rotation
 │   ├── audit/                         # Credential age reporting, identity inventory
-│   └── drill/                         # Break-glass drill runner
+│   ├── drill/                         # Break-glass drill runner
+│   ├── signing/                       # Artifact signing and verification (cosign/notation)
+│   ├── ceremony/                      # PKI key ceremony scripts (root + intermediate CA)
+│   └── scanning/                      # Enhanced secret scanning and DLP integration
 ├── tests/
 │   ├── opa/                           # Rego policies for secrets + CI compliance
 │   ├── compliance/                    # Control objective validation scripts
-│   ├── integration/                   # Vault dynamic credential tests
+│   ├── integration/                   # SOPS, PKI, SSH CA, Transit integration tests
 │   └── e2e/                           # End-to-end reference validation
 ├── examples/
 │   ├── python/                        # Python integration examples
@@ -103,6 +109,10 @@ dev-identity-secrets-reference/
 │   ├── app/                           # Application integration patterns
 │   ├── vm/                            # Cloud-init + systemd + Vault Agent patterns
 │   ├── siem/                          # Vault audit log → Splunk/ELK integration
+│   ├── mtls/                          # mTLS patterns (Vault PKI, Envoy, nginx, direct app)
+│   ├── jit-access/                    # JIT privileged access patterns
+│   ├── signing/                       # Artifact signing examples (cosign, notation)
+│   ├── dlp/                           # DLP integration guide
 │   └── policies/                      # Branch protection checklist
 ├── secrets/                           # SOPS-encrypted secrets (dev/staging/prod)
 ├── .sops.yaml                         # Multi-environment SOPS configuration
@@ -262,10 +272,35 @@ These are not recommendations. They are requirements.
 
 ```bash
 make scan                                 # Run secret scanner
+make scan-enhanced                        # Enhanced scanner with DLP patterns
+make entropy-check                        # Entropy-based high-risk detection
 make validate                             # Full validation suite
 make test                                 # OPA policies + compliance checks
+make test-integration                     # Integration tests (SOPS, PKI, SSH CA, Transit)
 make audit                                # Full security audit
 ```
+
+### Artifact Signing
+
+Sign and verify build artifacts using `cosign` or `notation`. See [`tools/signing/`](tools/signing/) for scripts and [`examples/signing/`](examples/signing/) for CI integration patterns.
+
+```bash
+make sign                                 # Sign artifacts
+make verify                               # Verify artifact signatures
+```
+
+### Key Ceremony
+
+Formalized root and intermediate CA key ceremony scripts with HSM support, quorum enforcement, and audit logging. See [`tools/ceremony/`](tools/ceremony/) and the [Key Ceremony Guide](docs/18-key-ceremony-guide.md).
+
+```bash
+make ceremony-root                        # Root CA ceremony (dry-run by default)
+make ceremony-intermediate                # Intermediate CA ceremony (dry-run by default)
+```
+
+### mTLS Patterns
+
+End-to-end mutual TLS examples using Vault PKI, Envoy, nginx, and direct application integration. See [`examples/mtls/`](examples/mtls/) and the [mTLS & Workload Identity Guide](docs/16-mtls-workload-identity-guide.md).
 
 ---
 
@@ -287,6 +322,9 @@ All contributions must pass the pre-commit hooks (secret scanning, shellcheck, Y
 - [MVP Plan](docs/05-mvp-plan.md)
 - [Decision Log](docs/08-decision-log.md)
 - [SOPS Bootstrap Guide](docs/15-sops-bootstrap-guide.md)
+- [mTLS & Workload Identity Guide](docs/16-mtls-workload-identity-guide.md)
+- [JIT Access Patterns](docs/17-jit-access-patterns.md)
+- [Key Ceremony Guide](docs/18-key-ceremony-guide.md)
 - [Official References](docs/11-references.md)
 
 ---
