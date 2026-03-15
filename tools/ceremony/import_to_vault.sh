@@ -12,6 +12,7 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 VAULT_MOUNT="pki"
 VAULT_INT_MOUNT="pki_int"
+VAULT_ADDR="${VAULT_ADDR:-}"
 CERT_DIR=""
 CRL_URL=""
 OCSP_URL=""
@@ -135,6 +136,8 @@ check_prereqs() {
   if command -v vault &>/dev/null; then
     log OK "vault CLI found: $(command -v vault)"
     log INFO "Vault version: $(vault version 2>/dev/null || echo 'unknown')"
+  elif [[ -n "$DRY_RUN" ]]; then
+    log WARN "vault CLI not found (dry-run continues without it)"
   else
     log ERROR "vault CLI not found — install HashiCorp Vault"
     exit 1
@@ -142,10 +145,15 @@ check_prereqs() {
 
   # Check environment
   if [[ -z "${VAULT_ADDR:-}" ]]; then
-    log ERROR "VAULT_ADDR not set — export VAULT_ADDR=https://vault.example.com:8200"
-    exit 1
+    if [[ -n "$DRY_RUN" ]]; then
+      log WARN "VAULT_ADDR not set (dry-run continues)"
+    else
+      log ERROR "VAULT_ADDR not set — export VAULT_ADDR=https://vault.example.com:8200"
+      exit 1
+    fi
+  else
+    log OK "VAULT_ADDR: ${VAULT_ADDR}"
   fi
-  log OK "VAULT_ADDR: ${VAULT_ADDR}"
 
   if [[ -z "${VAULT_TOKEN:-}" ]] && [[ -z "$DRY_RUN" ]]; then
     log WARN "VAULT_TOKEN not set — vault CLI must be otherwise authenticated"
