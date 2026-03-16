@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0] - 2026-03-16
+### Added
+- **Runbook automation engine** (`tools/runbooks/`) — YAML-driven runbook executor with sequential step execution, validation, rollback, and structured logging; 5 built-in runbooks (secret-rotation, cert-renewal, vault-unseal, incident-response, onboard-service)
+- **Secrets mesh framework** (`lib/python/secrets_sdk/mesh/`) — pluggable provider architecture (Vault, file, env) with caching, hot-reload, and failover; distributed secrets delivery pattern
+- **Vault migration toolkit** (`tools/migrate/`) — `vault-export.sh`, `vault-import.sh`, `vault-diff.sh`, `vault-health-check.sh` for SOPS-encrypted Vault instance migrations
+- **Cloud bridge examples** (`examples/cloud-bridge/`) — bidirectional sync scripts for AWS Secrets Manager, Azure Key Vault, GCP Secret Manager with unified `bridge-config.yaml`
+- **Secret lifecycle metrics** (`tools/metrics/`) — `collect-metrics.sh` for cross-tool metrics collection, `risk-scorer.sh` for risk scoring, `generate-report.sh` for terminal and markdown reporting
+- **Workshop training modules** (`docs/workshops/`) — 4 hands-on workshops: Vault Fundamentals, Secrets in CI/CD, Incident Response with SIRM, SDK Development
+- **Architecture overview** (`docs/22-architecture-overview.md`) — high-level architecture overview document
+- **SDK design guide** (`docs/23-sdk-design-guide.md`) — SDK development guidelines and patterns
+- **Attack trees** (`docs/24-attack-trees.md`) — attack tree analysis with Mermaid diagram (`diagrams/04-attack-tree-secret-compromise.mmd`)
+- **Incident playbooks** (`docs/25-incident-playbooks.md`) — expanded incident response playbooks with detailed procedures
+- **Security hardening checklist** (`docs/26-security-hardening-checklist.md`) — comprehensive security hardening guide
+- **Incident response flow diagram** (`diagrams/05-incident-response-flow.mmd`)
+- **Grafana dashboards** (`dev/grafana/`) — Vault health dashboard with datasource and dashboard provisioning
+- **Prometheus monitoring** (`dev/prometheus/`) — metrics collection config for dev environment
+- **Dev seed script** (`dev/scripts/seed-demo-data.sh`) — demo data seeder for local dev
+- **Vault Agent config** (`dev/vault/agent-config.hcl`) — agent sidecar config for dev environment
+- **GitHub templates** — bug report, feature request, PR template, dependabot config
+- **Contributing guide** (`CONTRIBUTING.md`)
+- **OPA policy expansion** — `ci_security_policy.rego`, `sops_config_policy.rego`, `vault_policy.rego` with tests
+- **CI workflows** — OPA tests (`opa-tests.yml`), shell tooling (`test-shell.yml`)
+- **Vault policy expansion** — 14 HCL policies (added `admin-emergency`, `ci-issuer`, `db-dynamic`, `developer-read`, `rotation-operator`, `ssh-ca-operator`, `transit-app`) + Sentinel EGPs
+- Makefile targets for runbooks, metrics, risk scoring, reporting, vault migration, mesh status
+
+### Changed
+- README.md complete rewrite — full directory tree, 29-tool inventory, 12 CI workflows, vault policy table, cloud bridge section, workshop listing, 500+ test badges
+- `docs/13-future-enhancements.md` updated — secrets mesh, runbooks, migration, cloud bridge, metrics, workshops moved to completed
+- Makefile expanded to 50+ targets with new sections for runbooks, metrics, vault migration, and mesh
+
 ## [0.5.0] - 2026-03-16
 ### Added
 - **Go SDK** (`lib/go/`) — VaultClient with 14 methods, SOPS decrypt, config validation, Cobra CLI (doctor, vault-health, scan, decrypt), 84 tests passing

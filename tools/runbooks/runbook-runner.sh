@@ -406,7 +406,8 @@ output_json_summary() {
 
   [[ $FAILED -eq 0 ]] && status="success" || status="failed"
 
-  local json_file="${LOG_DIR}/$(basename "${RUNBOOK_FILE}" .yaml)-${RUN_ID}.json"
+  local json_file
+  json_file="${LOG_DIR}/$(basename "${RUNBOOK_FILE}" .yaml)-${RUN_ID}.json"
 
   local steps_json="["
   local first=1

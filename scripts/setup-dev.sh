@@ -63,7 +63,7 @@ if check_cmd python3; then
     # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
     pip install --quiet --upgrade pip
-    pip install --quiet -e "$PYTHON_DIR[dev]" && ok "python deps installed" || err "python dep install failed"
+    pip install --quiet -e "${PYTHON_DIR}[dev]" && ok "python deps installed" || err "python dep install failed"
     deactivate
 else
     err "python3 required for lib/python"

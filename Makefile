@@ -10,6 +10,9 @@
        test-opa test-compliance test-bats \
        cert-inventory cert-monitor \
        compliance-matrix compliance-evidence \
+       runbook metrics risk-score report \
+       vault-export vault-import vault-diff vault-health \
+       mesh-status \
        all-tests e2e all
 
 SHELL := /bin/bash
@@ -93,6 +96,23 @@ help: ## Show available targets
 	@echo "$(CYAN)--- Certificate Management ---$(NC)"
 	@echo "  $(GREEN)cert-inventory$(NC)           Scan and inventory all certificates"
 	@echo "  $(GREEN)cert-monitor$(NC)             Monitor certificate expiry and alert"
+	@echo ""
+	@echo "$(CYAN)--- Runbooks ---$(NC)"
+	@echo "  $(GREEN)runbook$(NC)                  Run a runbook (RUNBOOK=<name> make runbook)"
+	@echo ""
+	@echo "$(CYAN)--- Metrics & Reporting ---$(NC)"
+	@echo "  $(GREEN)metrics$(NC)                  Collect secret lifecycle metrics"
+	@echo "  $(GREEN)risk-score$(NC)               Calculate risk score from collected metrics"
+	@echo "  $(GREEN)report$(NC)                   Generate metrics report (terminal format)"
+	@echo ""
+	@echo "$(CYAN)--- Vault Migration ---$(NC)"
+	@echo "  $(GREEN)vault-export$(NC)             Export Vault KV secrets to SOPS-encrypted file"
+	@echo "  $(GREEN)vault-import$(NC)             Import SOPS-encrypted secrets into Vault"
+	@echo "  $(GREEN)vault-diff$(NC)               Compare secret metadata between Vault instances"
+	@echo "  $(GREEN)vault-health$(NC)             Run comprehensive Vault health check"
+	@echo ""
+	@echo "$(CYAN)--- Secrets Mesh ---$(NC)"
+	@echo "  $(GREEN)mesh-status$(NC)              Show secrets mesh provider status"
 	@echo ""
 	@echo "$(CYAN)--- Operations ---$(NC)"
 	@echo "  $(GREEN)drill$(NC)                    Run break-glass drill"
@@ -300,6 +320,53 @@ cert-inventory: ## Scan and inventory all certificates
 cert-monitor: ## Monitor certificate expiry and alert
 	@echo "$(GREEN)[*] Running certificate monitor...$(NC)"
 	@./tools/audit/cert_monitor.sh
+
+# === Runbooks ===
+runbook: ## Run a runbook (RUNBOOK=<name> make runbook)
+	@if [ -z "$(RUNBOOK)" ]; then \
+		echo "$(CYAN)Available runbooks:$(NC)"; \
+		ls tools/runbooks/runbooks/*.yaml 2>/dev/null | xargs -I{} basename {} | sed 's/^/  /'; \
+		echo ""; \
+		echo "Usage: RUNBOOK=secret-rotation.yaml make runbook"; \
+	else \
+		echo "$(GREEN)[*] Running runbook: $(RUNBOOK)...$(NC)"; \
+		./tools/runbooks/runbook-runner.sh tools/runbooks/runbooks/$(RUNBOOK); \
+	fi
+
+# === Metrics & Reporting ===
+metrics: ## Collect secret lifecycle metrics
+	@echo "$(GREEN)[*] Collecting secret lifecycle metrics...$(NC)"
+	@./tools/metrics/collect-metrics.sh
+
+risk-score: ## Calculate risk score from collected metrics
+	@echo "$(GREEN)[*] Calculating risk score...$(NC)"
+	@./tools/metrics/risk-scorer.sh
+
+report: ## Generate metrics report (terminal format)
+	@echo "$(GREEN)[*] Generating metrics report...$(NC)"
+	@./tools/metrics/generate-report.sh
+
+# === Vault Migration ===
+vault-export: ## Export Vault KV secrets to SOPS-encrypted file
+	@echo "$(GREEN)[*] Exporting Vault secrets...$(NC)"
+	@./tools/migrate/vault-export.sh
+
+vault-import: ## Import SOPS-encrypted secrets into Vault
+	@echo "$(GREEN)[*] Importing secrets into Vault...$(NC)"
+	@./tools/migrate/vault-import.sh
+
+vault-diff: ## Compare secret metadata between Vault instances
+	@echo "$(GREEN)[*] Comparing Vault instances...$(NC)"
+	@./tools/migrate/vault-diff.sh
+
+vault-health: ## Run comprehensive Vault health check
+	@echo "$(GREEN)[*] Running Vault health check...$(NC)"
+	@./tools/migrate/vault-health-check.sh
+
+# === Secrets Mesh ===
+mesh-status: ## Show secrets mesh provider status
+	@echo "$(GREEN)[*] Checking secrets mesh status...$(NC)"
+	@cd lib/python && python3 -c "from secrets_sdk.mesh import SecretsMesh; m = SecretsMesh(); print(m.status())" 2>/dev/null || echo "$(YELLOW)[!] Python SDK not installed — run: make sdk-install$(NC)"
 
 # === Diagnostics ===
 doctor: ## Run secrets-doctor diagnostic tool

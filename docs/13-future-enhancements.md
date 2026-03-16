@@ -1,5 +1,22 @@
 # Future Enhancements
 
+## Completed in v0.6.0
+
+| Capability | Delivered In |
+|---|---|
+| Runbook automation engine — YAML-driven executor with rollback, 5 built-in runbooks | `tools/runbooks/`, `tools/runbooks/runbooks/` |
+| Secrets mesh framework — pluggable providers (Vault, file, env), caching, hot-reload | `lib/python/secrets_sdk/mesh/` |
+| Vault migration toolkit — export, import, diff, health check with SOPS encryption | `tools/migrate/` |
+| Cloud bridge examples — AWS Secrets Manager, Azure Key Vault, GCP Secret Manager sync | `examples/cloud-bridge/` |
+| Secret lifecycle metrics — collection, risk scoring, terminal + markdown reporting | `tools/metrics/` |
+| Workshop training modules — Vault Fundamentals, CI/CD Secrets, SIRM, SDK Development | `docs/workshops/` |
+| Architecture overview, SDK design guide, attack trees, incident playbooks, hardening checklist | `docs/22-26` |
+| Grafana dashboards + Prometheus monitoring for dev environment | `dev/grafana/`, `dev/prometheus/` |
+| Expanded Vault policy library — 14 HCL policies + 3 Sentinel EGPs | `platform/vault/policies/`, `platform/vault/sentinel/` |
+| OPA policy expansion — CI security, SOPS config, Vault policies with tests | `tests/opa/` |
+| GitHub templates — bug report, feature request, PR template, dependabot | `.github/` |
+| Contributing guide | `CONTRIBUTING.md` |
+
 ## Completed in v0.5.0
 
 | Capability | Delivered In |
@@ -33,7 +50,7 @@
 
 ## Remaining Future Work
 
-Most of the original roadmap has been delivered. The items below are aspirational extensions beyond the current reference architecture scope.
+The reference architecture is comprehensive. The items below are aspirational extensions beyond the current scope.
 
 ### Near-term
 
@@ -51,4 +68,3 @@ Most of the original roadmap has been delivered. The items below are aspirationa
 
 - **Multi-cluster secrets federation** — cross-cluster Vault replication patterns with conflict resolution and split-brain recovery
 - **Hardware security module (HSM) abstraction layer** — unified interface across CloudHSM, Luna, YubiHSM for ceremony and transit operations
-- **Secrets mesh** — distributed secrets delivery fabric with gossip-based invalidation, cross-region failover, and zero-downtime rotation propagation

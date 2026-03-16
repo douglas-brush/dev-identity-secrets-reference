@@ -23,7 +23,7 @@ set -euo pipefail
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_DIR
+readonly SCRIPT_DIR; export SCRIPT_DIR
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 readonly TIMESTAMP
 

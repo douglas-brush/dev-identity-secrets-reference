@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"; export REPO_ROOT
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ── Defaults ──────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ PASS_COUNT=0
 WARN_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-INFO_COUNT=0
+INFO_COUNT=0; export INFO_COUNT
 
 declare -a JSON_SECTIONS=()
 
@@ -255,10 +255,13 @@ check_auth_methods() {
 
   # Check for common missing auth methods
   local has_oidc has_ldap has_approle
+  local has_oidc has_ldap has_approle
   has_oidc=$(echo "$auth_json" | jq 'to_entries | map(select(.value.type == "oidc")) | length')
   has_ldap=$(echo "$auth_json" | jq 'to_entries | map(select(.value.type == "ldap")) | length')
   has_approle=$(echo "$auth_json" | jq 'to_entries | map(select(.value.type == "approle")) | length')
 
+  [[ "$has_oidc" -eq 0 ]] && log INFO "No OIDC auth — consider for SSO integration"
+  [[ "$has_ldap" -eq 0 ]] && log INFO "No LDAP auth — consider for directory integration"
   [[ "$has_approle" -eq 0 ]] && log INFO "No AppRole auth — consider for machine-to-machine"
 
   pass "Auth methods inventory complete (${auth_count} methods)"
@@ -427,6 +430,7 @@ check_secret_engines() {
   transit_count=$(echo "$engines_json" | jq '[to_entries[] | select(.value.type == "transit")] | length')
   pki_count=$(echo "$engines_json" | jq '[to_entries[] | select(.value.type == "pki")] | length')
 
+  [[ "$kv_count" -eq 0 ]] && log INFO "No KV engine — consider for secret storage"
   [[ "$transit_count" -eq 0 ]] && log INFO "No Transit engine — consider for encryption-as-a-service"
   [[ "$pki_count" -eq 0 ]] && log INFO "No PKI engine — consider for certificate management"
 

@@ -5,8 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"; export REPO_ROOT
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export TIMESTAMP
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 

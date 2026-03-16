@@ -7,8 +7,8 @@ set -euo pipefail
 # Usage: risk-scorer.sh --input <metrics.json> [--weights-file <weights.json>] [--json] [--verbose]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"; export REPO_ROOT
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export TIMESTAMP
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
@@ -353,9 +353,9 @@ else
   printf '║                                                           ║\n'
 
   # Progress bar
-  local bar_width=40
-  local filled=$(( score * bar_width / 100 ))
-  local empty=$(( bar_width - filled ))
+  bar_width=40
+  filled=$(( score * bar_width / 100 ))
+  empty=$(( bar_width - filled ))
   printf '║     ['
   if [[ "$score" -ge 70 ]]; then
     printf '\033[0;32m'
@@ -386,7 +386,7 @@ for cat in ['secrets_hygiene','cert_health','credential_age','policy_compliance'
     contrib = c.get('weighted_contribution', 0)
     print(f'{cat}|{w:.2f}|{s}|{contrib}')
 " 2>/dev/null | while IFS='|' read -r cat weight cscore contrib; do
-    local score_disp
+    score_disp=""
     if [[ "$cscore" -ge 70 ]]; then
       score_disp="$(_green "$cscore")"
     elif [[ "$cscore" -ge 50 ]]; then

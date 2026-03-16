@@ -106,7 +106,9 @@ terraform.rc
 
 # === Logs & Reports ===
 logs/*.log
+logs/**/*.log
 !logs/.gitkeep
+!logs/**/.gitkeep
 
 # === SIRM Sessions ===
 sessions/
