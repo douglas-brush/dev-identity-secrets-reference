@@ -1,0 +1,103 @@
+%% Incident Response Workflow for Secrets and Identity Incidents
+%% Reference: docs/25-incident-playbooks.md
+%% Integrates with SIRM framework (docs/19-sirm-framework.md)
+
+flowchart TD
+    %% ── Detection ──
+    START(["Incident Detected"])
+    START --> DETECT{"Detection Source"}
+
+    DETECT -->|"Secret scanner<br/>(gitleaks, GHAS)"| TRIAGE
+    DETECT -->|"Cloud provider<br/>alert"| TRIAGE
+    DETECT -->|"Vault audit<br/>anomaly"| TRIAGE
+    DETECT -->|"CI pipeline<br/>anomaly"| TRIAGE
+    DETECT -->|"Manual report<br/>/ peer review"| TRIAGE
+    DETECT -->|"Certificate<br/>monitoring"| TRIAGE
+
+    %% ── Triage ──
+    TRIAGE["Triage and Classify"]
+    TRIAGE --> SIRM_OPEN["Open SIRM Session<br/><i>sirm bootstrap --case ...</i>"]
+    SIRM_OPEN --> CLASSIFY{"Classify<br/>Incident Type"}
+
+    CLASSIFY -->|"Secret in Git"| PB1["Playbook 1:<br/>Leaked Secret"]
+    CLASSIFY -->|"CI Compromise"| PB2["Playbook 2:<br/>CI Pipeline"]
+    CLASSIFY -->|"Vault Token"| PB3["Playbook 3:<br/>Vault Token Theft"]
+    CLASSIFY -->|"CA Compromise"| PB4["Playbook 4:<br/>CA Compromise"]
+    CLASSIFY -->|"System Outage<br/>+ Emergency"| PB5["Playbook 5:<br/>Break-Glass"]
+
+    %% ── Playbook 1: Leaked Secret ──
+    PB1 --> PB1_REVOKE["Revoke exposed<br/>credential immediately"]
+    PB1_REVOKE --> PB1_BLAST["Assess blast radius<br/>(history, forks, CI logs,<br/>images, caches)"]
+    PB1_BLAST --> PB1_AUDIT["Check cloud/Vault<br/>audit logs for<br/>unauthorized use"]
+    PB1_AUDIT --> PB1_CLEAN["Remove from Git history<br/>(BFG / git-filter-repo)"]
+    PB1_CLEAN --> PB1_NEW["Issue new credentials<br/>+ update consumers"]
+    PB1_NEW --> PB1_FIX["Fix guardrail gap<br/>(scanner pattern,<br/>SOPS rule, hook)"]
+    PB1_FIX --> VERIFY
+
+    %% ── Playbook 2: CI Pipeline ──
+    PB2 --> PB2_ISOLATE["Disable pipeline<br/>+ quarantine runners"]
+    PB2_ISOLATE --> PB2_OIDC["Revoke OIDC trust<br/>for compromised repo"]
+    PB2_OIDC --> PB2_ENUM["Enumerate all<br/>CI-accessible secrets"]
+    PB2_ENUM --> PB2_ROTATE["Rotate ALL<br/>CI-accessible secrets"]
+    PB2_ROTATE --> PB2_DEPLOY["Verify deployment<br/>integrity (image<br/>digests, signatures)"]
+    PB2_DEPLOY --> PB2_REBUILD["Rebuild runners<br/>+ re-establish<br/>OIDC trust"]
+    PB2_REBUILD --> VERIFY
+
+    %% ── Playbook 3: Vault Token ──
+    PB3 --> PB3_REVOKE["Revoke token<br/>+ all child tokens"]
+    PB3_REVOKE --> PB3_LEASE["Revoke all leases<br/>created by token"]
+    PB3_LEASE --> PB3_AUDIT["Audit token usage<br/>via accessor in<br/>Vault audit log"]
+    PB3_AUDIT --> PB3_SECRETS["Rotate all secrets<br/>the token could read"]
+    PB3_SECRETS --> PB3_REAUTH["Re-authenticate<br/>all affected workloads"]
+    PB3_REAUTH --> PB3_POLICY["Review + tighten<br/>Vault policies"]
+    PB3_POLICY --> VERIFY
+
+    %% ── Playbook 4: CA Compromise ──
+    PB4 --> PB4_CRL["Revoke CA cert<br/>+ publish CRL"]
+    PB4_CRL --> PB4_OCSP["Update OCSP<br/>responder"]
+    PB4_OCSP --> PB4_NOTIFY["Notify all<br/>relying parties"]
+    PB4_NOTIFY --> PB4_NEWCA["Stand up replacement<br/>CA (if intermediate<br/>or root)"]
+    PB4_NEWCA --> PB4_REISSUE["Re-issue all<br/>leaf certificates"]
+    PB4_REISSUE --> PB4_TRUST["Distribute new<br/>CA trust bundle"]
+    PB4_TRUST --> VERIFY
+
+    %% ── Playbook 5: Break-Glass ──
+    PB5 --> PB5_AUTH["Dual-control<br/>authorization"]
+    PB5_AUTH --> PB5_SCOPE["Define + document<br/>scope limits"]
+    PB5_SCOPE --> PB5_RETRIEVE["Retrieve break-glass<br/>materials (2-person)"]
+    PB5_RETRIEVE --> PB5_ACCESS["Establish emergency<br/>access (Vault unseal,<br/>cloud root, SOPS, SSH)"]
+    PB5_ACCESS --> PB5_OPS["Execute minimum<br/>necessary operations"]
+    PB5_OPS --> PB5_ROTATE["Rotate ALL<br/>break-glass materials"]
+    PB5_ROTATE --> VERIFY
+
+    %% ── Common Post-Incident ──
+    VERIFY["Run verification<br/><i>sirm run secrets-doctor</i><br/><i>sirm run enhanced-scan</i>"]
+    VERIFY --> EVIDENCE["Collect + register<br/>all evidence in SIRM"]
+    EVIDENCE --> FINDINGS["Record classified<br/>findings (F/O/I/H)"]
+    FINDINGS --> CLOSE["Close SIRM session<br/><i>sirm close</i>"]
+    CLOSE --> REVIEW["Post-incident review<br/>(within 24-48h)"]
+    REVIEW --> SEAL["Seal SIRM session<br/><i>sirm seal</i><br/>(tamper-evident archive)"]
+    SEAL --> IMPROVE["Control improvements<br/>+ update threat model"]
+    IMPROVE --> DONE(["Incident Closed"])
+
+    %% ── Styling ──
+    classDef startend fill:#495057,stroke:#212529,color:#fff,font-weight:bold
+    classDef decision fill:#868e96,stroke:#495057,color:#fff
+    classDef playbook fill:#339af0,stroke:#1864ab,color:#fff,font-weight:bold
+    classDef action fill:#f8f9fa,stroke:#495057,color:#212529
+    classDef critical fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    classDef sirm fill:#51cf66,stroke:#2f9e44,color:#000
+    classDef verify fill:#ffd43b,stroke:#e67700,color:#000
+
+    class START,DONE startend
+    class DETECT,CLASSIFY decision
+    class PB1,PB2,PB3,PB4,PB5 playbook
+    class PB1_REVOKE,PB2_ISOLATE,PB3_REVOKE,PB4_CRL,PB5_AUTH critical
+    class SIRM_OPEN,EVIDENCE,FINDINGS,CLOSE,SEAL sirm
+    class VERIFY verify
+    class TRIAGE,PB1_BLAST,PB1_AUDIT,PB1_CLEAN,PB1_NEW,PB1_FIX action
+    class PB2_OIDC,PB2_ENUM,PB2_ROTATE,PB2_DEPLOY,PB2_REBUILD action
+    class PB3_LEASE,PB3_AUDIT,PB3_SECRETS,PB3_REAUTH,PB3_POLICY action
+    class PB4_OCSP,PB4_NOTIFY,PB4_NEWCA,PB4_REISSUE,PB4_TRUST action
+    class PB5_SCOPE,PB5_RETRIEVE,PB5_ACCESS,PB5_OPS,PB5_ROTATE action
+    class REVIEW,IMPROVE action

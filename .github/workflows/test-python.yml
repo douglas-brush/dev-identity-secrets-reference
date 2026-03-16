@@ -1,0 +1,71 @@
+name: Python SDK CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ matrix.python-version }}-${{ hashFiles('lib/python/pyproject.toml') }}
+          restore-keys: |
+            pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: cd lib/python && pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: |
+          cd lib/python
+          pytest tests/ -v --tb=short \
+            --junitxml=results.xml \
+            --cov=secrets_sdk \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-results-${{ matrix.python-version }}
+          path: |
+            lib/python/results.xml
+            lib/python/coverage.xml
+          retention-days: 30
+
+      - name: Generate coverage badge
+        if: matrix.python-version == '3.12' && github.event_name != 'pull_request'
+        run: |
+          cd lib/python
+          COVERAGE=$(python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          print(f\"{float(tree.getroot().attrib['line-rate']) * 100:.0f}\")
+          ")
+          echo "COVERAGE=${COVERAGE}%" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Python SDK Coverage: ${COVERAGE}%" >> "$GITHUB_STEP_SUMMARY"

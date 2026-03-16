@@ -1,17 +1,108 @@
-# Pre-commit hooks for secrets detection and repo hygiene.
+# Pre-commit hooks for secrets detection, linting, and repo hygiene.
 # Install: pip install pre-commit && pre-commit install
 # Run manually: pre-commit run --all-files
 
 repos:
+  # === Standard Hooks (whitespace, merge conflicts, large files) ===
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+      - id: check-json
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: check-symlinks
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
   # === Secret Detection ===
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.18.4
+    rev: v8.21.2
     hooks:
       - id: gitleaks
         args: ['--config', 'tools/scanning/custom-gitleaks.toml']
 
+  # === Shell Script Linting ===
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ['-e', 'SC1091']
+
+  # === YAML Lint ===
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ['-d', '{extends: relaxed, rules: {line-length: {max: 200}}}']
+
+  # === Python (black, isort, mypy) ===
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        files: ^lib/python/
+        language_version: python3
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        files: ^lib/python/
+        args: ['--profile', 'black']
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^lib/python/secrets_sdk/
+        args: ['--config-file', 'lib/python/pyproject.toml']
+        additional_dependencies: ['pydantic>=2.0', 'hvac>=2.1.0', 'click>=8.1.0', 'pyyaml>=6.0']
+
+  # === Go (gofmt, go vet) ===
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        files: ^lib/go/
+      - id: go-vet
+        files: ^lib/go/
+
+  # === Local Hooks (TypeScript, SOPS, custom secret scanning) ===
   - repo: local
     hooks:
+      - id: ts-lint
+        name: TypeScript type check
+        entry: bash -c 'cd lib/typescript && npx tsc --noEmit'
+        language: system
+        files: ^lib/typescript/.*\.ts$
+        pass_filenames: false
+
+      - id: sops-yaml-valid
+        name: Validate .sops.yaml syntax
+        entry: bash -c 'python3 -c "import yaml; yaml.safe_load(open(\".sops.yaml\"))" || { echo "[!] .sops.yaml is not valid YAML"; exit 1; }'
+        language: system
+        files: ^\.sops\.yaml$
+        always_run: true
+
+      - id: sops-encrypted-check
+        name: Verify SOPS encryption on secrets files
+        entry: bash -c 'for f in $(git diff --cached --name-only | grep -E "secrets/.*\.(yaml|yml|json)$" | grep "\.enc\."); do if ! grep -q "sops:" "$f" 2>/dev/null && ! grep -q "\"sops\":" "$f" 2>/dev/null; then echo "[!] $f appears to be in secrets/ but is not SOPS-encrypted"; exit 1; fi; done'
+        language: system
+        pass_filenames: false
+
+      - id: sops-validation
+        name: Validate SOPS-encrypted files are actually encrypted
+        entry: bash -c 'fail=0; for f in $(find . -name "*.enc.yaml" -o -name "*.enc.yml" -o -name "*.enc.json" -not -path "./.git/*" 2>/dev/null); do if ! grep -qE "^sops:|\"sops\":" "$f" 2>/dev/null; then echo "[!] $f has .enc extension but lacks SOPS metadata — may be plaintext"; fail=1; fi; done; exit $fail'
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: no-plaintext-secrets
         name: Block plaintext secrets in repository
         entry: ./bootstrap/scripts/check_no_plaintext_secrets.sh
@@ -50,45 +141,3 @@ repos:
         entry: bash -c 'fail=0; for f in $(find . -type f \( -name "*.pem" -o -name "*.key" -o -name "*.p12" -o -name "*.pfx" \) -not -path "./.git/*" 2>/dev/null); do p=$(stat -f "%A" "$f" 2>/dev/null || stat -c "%a" "$f" 2>/dev/null); if [ "$p" != "600" ] && [ "$p" != "400" ]; then echo "[!] $f has permissions $p (should be 600 or 400)"; fail=1; fi; done; exit $fail'
         language: system
         pass_filenames: false
-
-      - id: sops-encrypted-check
-        name: Verify SOPS encryption on secrets files
-        entry: bash -c 'for f in $(git diff --cached --name-only | grep -E "secrets/.*\.(yaml|yml|json)$" | grep "\.enc\."); do if ! grep -q "sops:" "$f" 2>/dev/null && ! grep -q "\"sops\":" "$f" 2>/dev/null; then echo "[!] $f appears to be in secrets/ but is not SOPS-encrypted"; exit 1; fi; done'
-        language: system
-        pass_filenames: false
-
-      - id: sops-validation
-        name: Validate SOPS-encrypted files are actually encrypted
-        entry: bash -c 'fail=0; for f in $(find . -name "*.enc.yaml" -o -name "*.enc.yml" -o -name "*.enc.json" -not -path "./.git/*" 2>/dev/null); do if ! grep -qE "^sops:|\"sops\":" "$f" 2>/dev/null; then echo "[!] $f has .enc extension but lacks SOPS metadata — may be plaintext"; fail=1; fi; done; exit $fail'
-        language: system
-        pass_filenames: false
-        always_run: true
-
-  # === YAML/JSON Validation ===
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
-    hooks:
-      - id: check-yaml
-        args: ['--allow-multiple-documents']
-      - id: check-json
-      - id: check-merge-conflict
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: detect-private-key
-      - id: check-added-large-files
-        args: ['--maxkb=500']
-
-  # === Shell Script Linting ===
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
-    hooks:
-      - id: shellcheck
-        args: ['-e', 'SC1091']
-
-  # === Terraform ===
-  - repo: https://github.com/antonbabenko/pre-commit-terraform
-    rev: v1.96.1
-    hooks:
-      - id: terraform_fmt
-      - id: terraform_validate
-      - id: terraform_tflint

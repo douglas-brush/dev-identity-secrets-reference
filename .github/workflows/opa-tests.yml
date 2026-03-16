@@ -1,0 +1,34 @@
+name: OPA Policy Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/opa/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tests/opa/**'
+
+permissions:
+  contents: read
+
+jobs:
+  opa-test:
+    name: Run OPA Policy Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OPA
+        run: |
+          curl -L -o /usr/local/bin/opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          chmod +x /usr/local/bin/opa
+          opa version
+
+      - name: Check OPA syntax
+        run: opa check tests/opa/
+
+      - name: Run OPA tests
+        run: opa test tests/opa/ -v

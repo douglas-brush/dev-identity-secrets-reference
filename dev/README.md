@@ -13,7 +13,7 @@ Docker Compose stack for testing all patterns in this reference architecture wit
 
 ```bash
 cd dev/
-make up        # Start Vault + PostgreSQL
+make up        # Start Vault + PostgreSQL + Vault Agent
 make setup     # Bootstrap all engines, policies, PKI, demo data
 make demo      # Walk through every pattern interactively
 ```
@@ -26,10 +26,39 @@ make up && make setup && make demo-auto
 
 ## What's Included
 
-| Service    | Port  | Purpose                                      |
-|------------|-------|----------------------------------------------|
-| Vault      | 8200  | Secret management (dev mode, root token)     |
-| PostgreSQL | 5432  | Target database for dynamic credentials demo |
+| Service      | Port  | Purpose                                       |
+|--------------|-------|-----------------------------------------------|
+| Vault        | 8200  | Secret management (dev mode, root token)      |
+| PostgreSQL   | 5432  | Target database for dynamic credentials demo  |
+| Vault Agent  | 8100  | Sidecar — auto-auth, token renewal, templating |
+| Prometheus   | 9090  | Metrics collection (monitoring profile)       |
+| Grafana      | 3000  | Dashboards & visualization (monitoring profile) |
+
+### Vault Agent Sidecar
+
+The Vault Agent runs as a sidecar service that:
+
+- **Auto-authenticates** via AppRole (no manual token management)
+- **Renews tokens** automatically before expiry
+- **Templates secrets** to `/tmp/secrets/` as JSON and env files
+- **Proxies API requests** on `:8100` — apps connect here instead of directly to Vault
+
+Rendered secret files:
+- `app-config.json` — KV application config
+- `db-creds.json` — Dynamic database credentials (auto-renewed)
+- `tls-cert.pem` / `tls-key.pem` — PKI certificates (auto-rotated)
+- `app.env` — Environment file with all credentials
+
+```bash
+# View rendered secrets
+make agent-secrets
+
+# Tail agent logs
+make agent-logs
+
+# Use the agent proxy (no token needed)
+curl http://localhost:8100/v1/kv/data/dev/apps/demo-app/config
+```
 
 ### Vault Engines Configured
 
@@ -60,6 +89,74 @@ All policies from `platform/vault/policies/` are loaded automatically:
 - `rotation-operator` — Automated secret rotation
 - `ssh-ca-operator` — SSH CA signing
 - `transit-app` — Transit encrypt/decrypt/sign
+
+## Monitoring Stack
+
+The monitoring stack runs under an optional Docker Compose profile. It is not started by default.
+
+### Starting Monitoring
+
+```bash
+make monitoring-up    # Start Prometheus + Grafana alongside the core stack
+make grafana          # Open the Vault Health dashboard in your browser
+make prometheus       # Open Prometheus UI
+```
+
+### Stopping Monitoring
+
+```bash
+make monitoring-down  # Stop only Prometheus + Grafana
+```
+
+### Grafana
+
+- **URL:** http://localhost:3000
+- **Credentials:** admin / admin (anonymous viewer access enabled)
+- **Pre-loaded dashboard:** Vault Health & Operations
+
+The dashboard includes panels for:
+- Seal status and HA status
+- Uptime, memory, goroutines
+- Token creation, lookup, and store rates
+- Auth method login rate
+- Active lease count and lease expiry rate
+- HTTP request rate and latency percentiles (p50/p90/p99)
+- Audit log write rate and failures
+- Secret engine usage by mount (KV, database, transit, PKI)
+- Transit encrypt/decrypt throughput
+
+### Prometheus
+
+- **URL:** http://localhost:9090
+- Scrapes Vault metrics at `/v1/sys/metrics` every 10s
+- Data retained for 7 days
+
+### Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `prometheus/prometheus.yml` | Scrape targets and intervals |
+| `grafana/datasources.yml` | Prometheus datasource config |
+| `grafana/dashboards.yml` | Dashboard provisioning |
+| `grafana/dashboards/vault-health.json` | Vault Health & Operations dashboard |
+
+## Seed Demo Data
+
+Populate Vault with realistic demo data across all engines:
+
+```bash
+make seed-demo-data
+```
+
+This creates:
+- **10+ KV secrets** across `dev/`, `staging/`, `prod/` paths (web-frontend, payment-service, notification-service, auth-service, shared infra)
+- **3 additional database roles** (analytics, migration, backup) beyond the 2 from setup
+- **5 PKI certificates** for service identities (api, gateway, auth, payments, notifications)
+- **5 additional Transit keys** for different use cases (PII encryption, HMAC, document signing, backup encryption, auto-rotating config key)
+- **3 AppRole identities** for demo applications (web-frontend, payment-service, analytics-pipeline)
+- Vault Agent bootstrap credentials
+
+The script is idempotent and safe to re-run.
 
 ## Testing Each Pattern
 
@@ -158,19 +255,45 @@ print('KV read:', client.secrets.kv.v2.read_secret_version(path='dev/apps/demo-a
 
 ## Makefile Targets
 
-| Target       | Description                                        |
-|--------------|----------------------------------------------------|
-| `make up`    | Start Vault + PostgreSQL                           |
-| `make down`  | Stop the stack                                     |
-| `make setup` | Bootstrap Vault (engines, policies, data)          |
-| `make demo`  | Run interactive demo of all patterns               |
-| `make demo-auto` | Run demo non-interactively                     |
-| `make logs`  | Tail all service logs                              |
-| `make clean` | Stop and remove all volumes                        |
-| `make reset` | Clean + up + setup (full restart)                  |
-| `make status`| Show service health                                |
-| `make shell-vault` | Shell into Vault container                   |
-| `make shell-pg`    | psql into PostgreSQL                         |
+| Target              | Description                                          |
+|---------------------|------------------------------------------------------|
+| `make up`           | Start Vault + PostgreSQL + Vault Agent               |
+| `make down`         | Stop the stack                                       |
+| `make setup`        | Bootstrap Vault (engines, policies, data)            |
+| `make demo`         | Run interactive demo of all patterns                 |
+| `make demo-auto`    | Run demo non-interactively                           |
+| `make seed-demo-data` | Seed Vault with realistic demo data               |
+| `make monitoring-up` | Start Prometheus + Grafana                          |
+| `make monitoring-down` | Stop Prometheus + Grafana                         |
+| `make grafana`      | Open Grafana Vault dashboard in browser              |
+| `make prometheus`   | Open Prometheus UI in browser                        |
+| `make agent-logs`   | Tail Vault Agent logs                                |
+| `make agent-secrets`| Show rendered secrets from Vault Agent               |
+| `make logs`         | Tail all service logs                                |
+| `make clean`        | Stop and remove all volumes                          |
+| `make reset`        | Clean + up + setup (full restart)                    |
+| `make status`       | Show service health                                  |
+| `make shell-vault`  | Shell into Vault container                           |
+| `make shell-pg`     | psql into PostgreSQL                                 |
+
+## Environment Variables
+
+Configurable via `.env` (copy from `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VAULT_PORT` | 8200 | Vault API port |
+| `VAULT_DEV_ROOT_TOKEN` | dev-root-token | Dev mode root token |
+| `VAULT_LOG_LEVEL` | info | Vault log level |
+| `VAULT_AGENT_PORT` | 8100 | Vault Agent proxy port |
+| `POSTGRES_PORT` | 5432 | PostgreSQL port |
+| `POSTGRES_USER` | postgres | PostgreSQL user |
+| `POSTGRES_PASSWORD` | postgres | PostgreSQL password |
+| `POSTGRES_DB` | demo | PostgreSQL database |
+| `PROMETHEUS_PORT` | 9090 | Prometheus port |
+| `GRAFANA_PORT` | 3000 | Grafana port |
+| `GRAFANA_USER` | admin | Grafana admin user |
+| `GRAFANA_PASSWORD` | admin | Grafana admin password |
 
 ## Troubleshooting
 
@@ -183,8 +306,17 @@ Check port 5432 is free. If you have a local PostgreSQL, change `POSTGRES_PORT` 
 **Setup script fails on database config**
 PostgreSQL may not be ready yet. Wait a few seconds and re-run `make setup` — the script is idempotent.
 
+**Vault Agent not rendering secrets**
+The agent needs AppRole credentials. Run `make seed-demo-data` to write role-id/secret-id to the agent volume, or check `make agent-logs` for auth errors.
+
+**Prometheus not scraping Vault**
+Vault must have telemetry enabled. In dev mode, metrics are available at `/v1/sys/metrics`. Check `make status` to confirm Vault is healthy.
+
+**Grafana shows "No data"**
+Wait 30-60 seconds for Prometheus to collect initial metrics. Check Prometheus targets at http://localhost:9090/targets to confirm the Vault target is UP.
+
 **"permission denied" on setup.sh or demo.sh**
-Run `chmod +x dev/vault/setup.sh dev/demo.sh`.
+Run `chmod +x dev/vault/setup.sh dev/demo.sh dev/scripts/seed-demo-data.sh`.
 
 **Reset everything**
 `make reset` destroys volumes and re-bootstraps from scratch.

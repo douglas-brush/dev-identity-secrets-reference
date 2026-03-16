@@ -1,6 +1,7 @@
 # Local development stack for developer identity & secrets management patterns.
 # Start: docker compose up -d
 # Bootstrap: docker compose exec vault /vault/scripts/setup.sh
+# Monitoring: docker compose --profile monitoring up -d
 
 services:
   vault:
@@ -22,7 +23,7 @@ services:
       - ./vault/setup.sh:/vault/scripts/setup.sh:ro
       - ../platform/vault/policies:/vault/policies:ro
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      test: ["CMD", "vault", "status", "-format=json"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -53,10 +54,102 @@ services:
       - dev-net
     restart: unless-stopped
 
+  vault-agent:
+    image: hashicorp/vault:1.15
+    container_name: dev-vault-agent
+    entrypoint: vault
+    command: agent -config=/vault/agent/config.hcl
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    ports:
+      - "${VAULT_AGENT_PORT:-8100}:8100"
+    volumes:
+      - ./vault/agent-config.hcl:/vault/agent/config.hcl:ro
+      - vault-agent-secrets:/tmp/secrets
+      - vault-agent-token:/tmp/vault
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8100/v1/sys/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - dev-net
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: dev-prometheus
+    profiles:
+      - monitoring
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - dev-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: dev-grafana
+    profiles:
+      - monitoring
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - dev-net
+    restart: unless-stopped
+
 volumes:
   vault-data:
     driver: local
   postgres-data:
+    driver: local
+  vault-agent-secrets:
+    driver: local
+  vault-agent-token:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
     driver: local
 
 networks:

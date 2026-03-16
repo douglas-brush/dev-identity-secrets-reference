@@ -1,0 +1,48 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps):"
+    labels:
+      - "dependencies"
+
+  # Python (lib/python)
+  - package-ecosystem: "pip"
+    directory: "/lib/python"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps):"
+    labels:
+      - "dependencies"
+      - "python"
+
+  # Go (lib/go)
+  - package-ecosystem: "gomod"
+    directory: "/lib/go"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps):"
+    labels:
+      - "dependencies"
+      - "go"
+
+  # npm / TypeScript (lib/typescript)
+  - package-ecosystem: "npm"
+    directory: "/lib/typescript"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps):"
+    labels:
+      - "dependencies"
+      - "typescript"

@@ -59,7 +59,9 @@ skip() {
 }
 
 info() {
-  [[ -n "$VERBOSE" ]] && printf '  %s %s\n' "$(_blue 'ℹ INFO')" "$1"
+  if [[ -n "$VERBOSE" ]]; then
+    printf '  %s %s\n' "$(_blue 'ℹ INFO')" "$1"
+  fi
 }
 
 section() {

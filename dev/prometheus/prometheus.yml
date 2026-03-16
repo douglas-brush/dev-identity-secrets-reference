@@ -1,0 +1,21 @@
+# Prometheus scrape configuration for local dev Vault monitoring.
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: "vault"
+    metrics_path: "/v1/sys/metrics"
+    params:
+      format: ["prometheus"]
+    bearer_token: "dev-root-token"
+    scheme: "http"
+    static_configs:
+      - targets: ["vault:8200"]
+        labels:
+          environment: "dev"
+          service: "vault"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

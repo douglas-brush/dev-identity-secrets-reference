@@ -6,27 +6,49 @@ insert_final_newline = true
 trim_trailing_whitespace = true
 charset = utf-8
 
-[*.{yaml,yml}]
+# YAML, JSON, HCL — 2 spaces
+[*.{yaml,yml,json,jsonnet,tf,hcl,tfvars}]
 indent_style = space
 indent_size = 2
 
-[*.{tf,hcl}]
+# Python — 4 spaces
+[*.py]
+indent_style = space
+indent_size = 4
+
+# Go — tabs
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# TypeScript / JavaScript — 2 spaces
+[*.{ts,tsx,js,jsx,mjs,cjs}]
 indent_style = space
 indent_size = 2
 
+# Shell scripts — 2 spaces
 [*.{sh,bash}]
 indent_style = space
 indent_size = 2
 
+# Markdown — preserve trailing whitespace (line breaks)
 [*.{md,markdown}]
 trim_trailing_whitespace = false
 
+# Makefile — tabs required
 [Makefile]
 indent_style = tab
 
-[*.{json,jsonnet}]
+# OPA Rego — tabs
+[*.rego]
+indent_style = tab
+
+# TOML — 2 spaces
+[*.toml]
 indent_style = space
 indent_size = 2
 
-[*.rego]
-indent_style = tab
+# Dockerfile
+[Dockerfile*]
+indent_style = space
+indent_size = 2

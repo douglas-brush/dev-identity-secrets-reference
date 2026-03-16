@@ -1,0 +1,44 @@
+name: Go SDK CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go ${{ matrix.go-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.22", "1.23"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: lib/go/go.sum
+
+      - name: Run go vet
+        run: cd lib/go && go vet ./...
+
+      - name: Run tests
+        run: cd lib/go && go test ./... -v -count=1 -race
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-results-${{ matrix.go-version }}
+          path: lib/go/
+          retention-days: 30

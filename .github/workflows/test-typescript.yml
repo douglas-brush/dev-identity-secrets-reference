@@ -1,0 +1,48 @@
+name: TypeScript SDK CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: lib/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: cd lib/typescript && npm ci
+
+      - name: Type check
+        run: cd lib/typescript && npx tsc --noEmit
+
+      - name: Run tests
+        run: cd lib/typescript && npm test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-test-results-node-${{ matrix.node-version }}
+          path: lib/typescript/
+          retention-days: 30

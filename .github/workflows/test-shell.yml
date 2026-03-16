@@ -1,0 +1,57 @@
+name: Shell Tooling CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shell-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ShellCheck on all .sh files
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -not -path '*/node_modules/*' \
+            -print0 | xargs -0 shellcheck --severity=warning --format=gcc || true
+          echo "### ShellCheck Results" >> "$GITHUB_STEP_SUMMARY"
+          ERRORS=$(find . -name '*.sh' -not -path './.git/*' -not -path '*/node_modules/*' \
+            -print0 | xargs -0 shellcheck --severity=error --format=gcc 2>&1 | wc -l)
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Found $ERRORS error-level issues" >> "$GITHUB_STEP_SUMMARY"
+            find . -name '*.sh' -not -path './.git/*' -not -path '*/node_modules/*' \
+              -print0 | xargs -0 shellcheck --severity=error --format=gcc
+            exit 1
+          else
+            echo "No error-level issues found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  bats:
+    name: BATS unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats-core
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+
+      - name: Run BATS tests
+        run: bats tests/unit/ --formatter tap
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-test-results
+          path: tests/unit/
+          retention-days: 30

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0] - 2026-03-16
+### Added
+- **Go SDK** (`lib/go/`) — VaultClient with 14 methods, SOPS decrypt, config validation, Cobra CLI (doctor, vault-health, scan, decrypt), 84 tests passing
+- **TypeScript SDK** (`lib/typescript/`) — VaultClient, SOPS, config, rotation modules, Commander CLI with 5 subcommands, strict TypeScript, 87 tests passing
+- **Vault policy library** (`platform/vault/policies/`) — 8 HCL policies (ci-readonly, ci-deploy, developer, security-auditor, break-glass, rotation-agent, pki-admin, transit-only), 3 Sentinel EGPs (require-reason, time-bound-access, mfa-required)
+- **Certificate monitoring** (`tools/audit/cert_inventory.sh`, `tools/audit/cert_monitor.sh`) — filesystem + Vault PKI + K8s cert scanning, baseline comparison, webhook/email alerts
+- **Compliance automation** (`tools/compliance/`) — `generate_evidence.sh` for SHA-256 evidence packages, `control_matrix.sh` for automated PASS/FAIL/MANUAL control checks
+- **Compliance examples** (`examples/compliance/`) — SOC 2 evidence collection and PCI DSS 4.0 validation scripts
+- **Compliance automation guide** (`docs/21-compliance-automation.md`)
+- **CI workflows** — cert monitoring (`.github/workflows/cert-monitor.yml`), Go tests (`test-go.yml`), TypeScript tests (`test-typescript.yml`), enhanced secret scan (`secret-scan-enhanced.yml`)
+- **236 new BATS tests** across 8 test files for shell tooling validation
+- **68 new Python SDK tests** for CLI, models, and exceptions (total: 265 Python tests)
+- Total test suite: **500+ tests** across Python, Go, TypeScript, BATS, and OPA
+
+### Fixed
+- 37 shellcheck warnings resolved across 20+ shell scripts
+- 7 Makefile broken references corrected
+- 3 missing executable permissions fixed
+- 1 broken doc cross-reference fixed
+- mypy clean on Python SDK
+
+### Changed
+- README.md rewritten with full directory tree, SDK comparison table, tool inventory, CI template matrix
+- `docs/13-future-enhancements.md` updated — Go and TypeScript SDKs moved from future to completed
+- Makefile reorganized with new targets for compliance, cert monitoring, OPA, and all-tests aggregate
+
 ## [0.4.0] - 2026-03-15
 ### Added
 - SIRM (Security Incident Response Management) session framework (`tools/sirm/`)

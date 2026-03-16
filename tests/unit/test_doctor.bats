@@ -110,7 +110,7 @@ teardown() {
 
   # Extract JSON from output (may have banner text before it)
   local json_output
-  json_output=$(echo "$output" | grep -E '^\{' | head -1)
+  json_output=$(echo "$output" | sed -n '/^{/,/^}/p')
 
   if [[ -n "$json_output" ]]; then
     echo "$json_output" | jq . >/dev/null 2>&1
@@ -124,7 +124,7 @@ teardown() {
   [[ "$status" -eq 0 || "$status" -eq 1 ]]
 
   local json_output
-  json_output=$(echo "$output" | grep -E '^\{' | head -1)
+  json_output=$(echo "$output" | sed -n '/^{/,/^}/p')
 
   if [[ -n "$json_output" ]]; then
     local has_timestamp has_overall has_results
