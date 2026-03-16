@@ -1,0 +1,42 @@
+name: "Incident Response Kickoff"
+description: "IR kickoff procedure — SIRM init, evidence gathering, timeline start, stakeholder notification"
+version: "1.0.0"
+requires:
+  - jq
+  - git
+
+steps:
+  - name: "Initialize SIRM session"
+    command: "SIRM_ID=\"SIRM-$(date -u +%Y%m%d-%H%M%S)\"; echo \"${SIRM_ID}\" > /tmp/sirm-session-$$.id; mkdir -p /tmp/sirm-${SIRM_ID}/{evidence,timeline,comms}; echo '{\"sirm_id\":\"'${SIRM_ID}'\",\"initiated_at\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"operator\":\"'$(whoami)'\",\"host\":\"'$(hostname)'\",\"status\":\"active\"}' | tee /tmp/sirm-${SIRM_ID}/session.json; echo \"SIRM session initialized: ${SIRM_ID}\""
+    validate: "test -f /tmp/sirm-session-$$.id && cat /tmp/sirm-session-$$.id"
+    rollback: "SIRM_ID=$(cat /tmp/sirm-session-$$.id 2>/dev/null); rm -rf /tmp/sirm-${SIRM_ID} /tmp/sirm-session-$$.id"
+
+  - name: "Capture initial system state"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); STATE_FILE=/tmp/sirm-${SIRM_ID}/evidence/initial-state.json; echo '{' > $STATE_FILE; echo '\"captured_at\": \"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",' >> $STATE_FILE; echo '\"hostname\": \"'$(hostname)'\",' >> $STATE_FILE; echo '\"uptime\": \"'$(uptime 2>/dev/null)'\",' >> $STATE_FILE; echo '\"whoami\": \"'$(whoami)'\",' >> $STATE_FILE; echo '\"pwd\": \"'$(pwd)'\",' >> $STATE_FILE; echo '\"env_vault_addr\": \"'${VAULT_ADDR:-not_set}'\",' >> $STATE_FILE; echo '\"git_branch\": \"'$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'N/A')'\",' >> $STATE_FILE; echo '\"git_hash\": \"'$(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')'\"' >> $STATE_FILE; echo '}' >> $STATE_FILE; echo 'Initial state captured'; cat $STATE_FILE | jq ."
+    validate: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); test -f /tmp/sirm-${SIRM_ID}/evidence/initial-state.json"
+    timeout: 15
+
+  - name: "Snapshot Vault audit logs"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); if command -v vault >/dev/null 2>&1 && [ -n \"${VAULT_ADDR:-}\" ]; then vault audit list -format=json 2>/dev/null > /tmp/sirm-${SIRM_ID}/evidence/vault-audit-config.json || echo '{}' > /tmp/sirm-${SIRM_ID}/evidence/vault-audit-config.json; vault read -format=json sys/audit 2>/dev/null > /tmp/sirm-${SIRM_ID}/evidence/vault-audit-status.json || true; echo 'Vault audit snapshot captured'; else echo 'Vault not available — skipping audit log capture'; fi"
+    continue_on_fail: true
+    timeout: 15
+
+  - name: "Snapshot recent git activity"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); git log --oneline --all --since='7 days ago' --format='%H|%ai|%an|%s' 2>/dev/null > /tmp/sirm-${SIRM_ID}/evidence/git-recent.log || echo 'No git history available'; echo 'Git activity snapshot captured'; wc -l /tmp/sirm-${SIRM_ID}/evidence/git-recent.log"
+    continue_on_fail: true
+
+  - name: "Initialize timeline"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); TIMELINE=/tmp/sirm-${SIRM_ID}/timeline/events.jsonl; echo '{\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"type\":\"ir_initiated\",\"operator\":\"'$(whoami)'\",\"description\":\"Incident response session initiated\"}' >> $TIMELINE; echo '{\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"type\":\"evidence_capture\",\"operator\":\"'$(whoami)'\",\"description\":\"Initial system state and audit logs captured\"}' >> $TIMELINE; echo 'Timeline initialized with 2 events'; cat $TIMELINE"
+    validate: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); test -f /tmp/sirm-${SIRM_ID}/timeline/events.jsonl"
+
+  - name: "Generate evidence manifest"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); MANIFEST=/tmp/sirm-${SIRM_ID}/evidence/MANIFEST.json; echo '{\"sirm_id\":\"'${SIRM_ID}'\",\"generated_at\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"files\":[' > $MANIFEST; first=1; for f in /tmp/sirm-${SIRM_ID}/evidence/*; do [ \"$f\" = \"$MANIFEST\" ] && continue; hash=$(shasum -a 256 \"$f\" 2>/dev/null | awk '{print $1}'); [ $first -eq 0 ] && echo ',' >> $MANIFEST; echo '{\"path\":\"'$(basename $f)'\",\"sha256\":\"'$hash'\",\"size\":'$(wc -c < \"$f\")'}' >> $MANIFEST; first=0; done; echo ']}' >> $MANIFEST; echo 'Evidence manifest generated:'; cat $MANIFEST | jq ."
+    validate: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); test -f /tmp/sirm-${SIRM_ID}/evidence/MANIFEST.json"
+
+  - name: "Stakeholder notification payload"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); echo '{\"event\":\"incident_response_initiated\",\"sirm_id\":\"'${SIRM_ID}'\",\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"operator\":\"'$(whoami)'\",\"severity\":\"TBD\",\"classification\":\"TBD\",\"message\":\"Incident response session has been initiated. SIRM ID: '${SIRM_ID}'. Evidence collection in progress.\"}' | tee /tmp/sirm-${SIRM_ID}/comms/initial-notification.json; echo 'Notification payload ready — integrate with your alerting/paging system'"
+    continue_on_fail: true
+
+  - name: "Print SIRM session summary"
+    command: "SIRM_ID=$(cat /tmp/sirm-session-$$.id); echo ''; echo \"SIRM Session: ${SIRM_ID}\"; echo \"Working Dir:  /tmp/sirm-${SIRM_ID}/\"; echo ''; echo 'Contents:'; find /tmp/sirm-${SIRM_ID} -type f | sort | while read -r f; do echo \"  $(ls -lh \"$f\" | awk '{print $5}')  ${f}\"; done; echo ''; echo 'Next steps:'; echo '  1. Assess severity and classify the incident'; echo '  2. Notify stakeholders using comms/initial-notification.json'; echo '  3. Continue evidence collection per IR playbook'; echo '  4. Update timeline as events unfold'"
+    continue_on_fail: true

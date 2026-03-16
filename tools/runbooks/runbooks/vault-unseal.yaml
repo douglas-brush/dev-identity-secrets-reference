@@ -1,0 +1,52 @@
+name: "Vault Emergency Unseal"
+description: "Emergency Vault unseal procedure — verify status, unseal, validate, re-enable services"
+version: "1.0.0"
+requires:
+  - vault
+  - jq
+  - curl
+env:
+  - VAULT_ADDR
+
+steps:
+  - name: "Check Vault connectivity"
+    command: "curl -sf --max-time 10 \"${VAULT_ADDR}/v1/sys/health\" -o /dev/null -w '%{http_code}' || echo 'Vault is unreachable or sealed (expected)'; echo ''; vault status -format=json 2>/dev/null | jq '{sealed, cluster_name, version}' || echo 'Vault status check returned non-zero (may be sealed)'"
+    continue_on_fail: true
+    timeout: 15
+
+  - name: "Verify seal status"
+    command: "SEAL_STATUS=$(vault status -format=json 2>/dev/null | jq -r '.sealed' 2>/dev/null || echo 'unknown'); echo \"Vault sealed: ${SEAL_STATUS}\"; if [ \"$SEAL_STATUS\" = 'false' ]; then echo 'Vault is already unsealed — no action needed'; fi"
+    timeout: 10
+
+  - name: "Unseal with key share 1"
+    command: "echo 'Provide unseal key share 1:'; if [ -n \"${VAULT_UNSEAL_KEY_1:-}\" ]; then vault operator unseal \"$VAULT_UNSEAL_KEY_1\" 2>&1; else echo 'VAULT_UNSEAL_KEY_1 not set — set env var or run: vault operator unseal <key>'; fi"
+    validate: "vault status -format=json 2>/dev/null | jq '.unseal_progress'"
+    timeout: 30
+
+  - name: "Unseal with key share 2"
+    command: "echo 'Provide unseal key share 2:'; if [ -n \"${VAULT_UNSEAL_KEY_2:-}\" ]; then vault operator unseal \"$VAULT_UNSEAL_KEY_2\" 2>&1; else echo 'VAULT_UNSEAL_KEY_2 not set — set env var or run: vault operator unseal <key>'; fi"
+    validate: "vault status -format=json 2>/dev/null | jq '.unseal_progress'"
+    timeout: 30
+
+  - name: "Unseal with key share 3"
+    command: "echo 'Provide unseal key share 3:'; if [ -n \"${VAULT_UNSEAL_KEY_3:-}\" ]; then vault operator unseal \"$VAULT_UNSEAL_KEY_3\" 2>&1; else echo 'VAULT_UNSEAL_KEY_3 not set — set env var or run: vault operator unseal <key>'; fi"
+    validate: "vault status -format=json 2>/dev/null | jq -e '.sealed == false'"
+    timeout: 30
+
+  - name: "Verify Vault is unsealed and healthy"
+    command: "vault status -format=json | jq '{sealed, initialized, cluster_name, version, ha_enabled}'; HEALTH=$(curl -sf \"${VAULT_ADDR}/v1/sys/health\" | jq '.'); echo \"$HEALTH\""
+    validate: "vault status -format=json | jq -e '.sealed == false and .initialized == true'"
+    timeout: 15
+
+  - name: "Verify auth methods are accessible"
+    command: "vault auth list -format=json | jq 'keys' 2>/dev/null || echo 'Auth list failed — check token'"
+    validate: "vault token lookup -format=json | jq -e '.data.id'"
+    timeout: 15
+
+  - name: "Verify secrets engines are accessible"
+    command: "vault secrets list -format=json | jq 'keys' 2>/dev/null || echo 'Secrets list failed — check permissions'"
+    timeout: 15
+
+  - name: "Log unseal event"
+    command: "echo '{\"event\":\"vault_unseal\",\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"operator\":\"'$(whoami)'\",\"vault_addr\":\"'${VAULT_ADDR}'\",\"host\":\"'$(hostname)'\"}' | tee /tmp/vault-unseal-event-$$.json"
+    continue_on_fail: true

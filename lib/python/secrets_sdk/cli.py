@@ -369,5 +369,82 @@ def sirm_report(session_file: str, output_format: str) -> None:
         click.echo(report.to_markdown())
 
 
+@cli.command("mesh-status")
+@click.option(
+    "--providers",
+    default="",
+    help="Comma-separated list of providers to enable (vault,env,file). Default: auto-detect.",
+)
+@click.option("--vault-addr", envvar="VAULT_ADDR", default="http://127.0.0.1:8200", help="Vault address.")
+@click.option("--env-prefix", default="", help="Environment variable prefix for env provider.")
+@click.option("--file-path", default="", help="Path to SOPS-encrypted file or directory for file provider.")
+@click.option("--json-output", "json_out", is_flag=True, help="Output results as JSON.")
+def mesh_status(providers: str, vault_addr: str, env_prefix: str, file_path: str, json_out: bool) -> None:
+    """Show Secrets Mesh status — provider health, cache stats, and connectivity."""
+    from secrets_sdk.mesh import EnvProvider, FileProvider, SecretsMesh
+
+    mesh = SecretsMesh(cache_ttl=0)  # No caching for status check
+
+    provider_list = [p.strip() for p in providers.split(",") if p.strip()] if providers else []
+
+    # Auto-detect or use specified providers
+    if not provider_list or "env" in provider_list:
+        mesh.register(EnvProvider(prefix=env_prefix or "APP"), priority=100)
+
+    if not provider_list or "vault" in provider_list:
+        try:
+            from secrets_sdk.vault import VaultClient
+            from secrets_sdk.mesh import VaultProvider
+
+            client = VaultClient(addr=vault_addr)
+            mesh.register(VaultProvider(client), priority=10)
+        except Exception as exc:
+            if "vault" in provider_list:
+                click.secho(f"Failed to initialize Vault provider: {exc}", fg="red", err=True)
+
+    if file_path and (not provider_list or "file" in provider_list):
+        p = Path(file_path)
+        if p.exists():
+            mesh.register(FileProvider(p), priority=50)
+        else:
+            click.secho(f"File path does not exist: {file_path}", fg="yellow", err=True)
+
+    status = mesh.health_check()
+
+    if json_out:
+        data = {
+            "overall": status.overall_status.value,
+            "providers": [
+                {
+                    "name": p.provider_name,
+                    "status": p.status.value,
+                    "latency_ms": round(p.latency_ms, 2),
+                    "detail": p.detail,
+                    "checked_at": p.checked_at.isoformat(),
+                }
+                for p in status.providers
+            ],
+            "cache": status.cache_stats,
+            "audit_entries": status.audit_count,
+        }
+        click.echo(json.dumps(data, indent=2))
+    else:
+        click.echo(status.summary())
+        click.echo()
+        for p in status.providers:
+            color = {"healthy": "green", "degraded": "yellow", "unhealthy": "red"}.get(
+                p.status.value, "white"
+            )
+            click.secho(f"  {p.provider_name}: {p.status.value}", fg=color)
+            if p.detail:
+                click.echo(f"    {p.detail}")
+            if p.latency_ms > 0:
+                click.echo(f"    latency: {p.latency_ms:.1f}ms")
+        click.echo()
+
+        if status.overall_status.value == "unhealthy":
+            sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

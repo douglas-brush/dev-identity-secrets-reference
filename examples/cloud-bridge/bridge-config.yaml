@@ -1,0 +1,163 @@
+# bridge-config.yaml — Multi-cloud secrets bridge configuration
+#
+# This file defines sync mappings, conflict resolution policies, and
+# notification webhooks for the cloud bridge scripts. Each cloud provider
+# has its own mappings section with provider-specific options.
+#
+# Usage:
+#   ./aws-secrets-manager-bridge.sh --mapping-file bridge-config.yaml --direction vault-to-aws
+#   ./azure-keyvault-bridge.sh --mapping-file bridge-config.yaml --direction bidirectional
+#   ./gcp-secret-manager-bridge.sh --mapping-file bridge-config.yaml --direction vault-to-gcp
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+
+# Conflict resolution policy applied when both sides have been modified.
+# Options: vault-wins (default), <provider>-wins, newest-wins
+conflict_policy: vault-wins
+
+# Vault KV v2 mount path (overridden by --vault-mount CLI flag)
+vault_mount: secret
+
+# Webhook for sync notifications (Slack-compatible JSON payload)
+notify_webhook: ""
+
+# ---------------------------------------------------------------------------
+# AWS Secrets Manager mappings
+# ---------------------------------------------------------------------------
+# Used by: aws-secrets-manager-bridge.sh
+#
+# Fields:
+#   vault_path      Vault KV v2 path (relative to mount, e.g., "myapp/db")
+#   asm_name        AWS Secrets Manager secret name
+#   sync            Enable/disable this mapping (default: true)
+#   rotation_days   Configure ASM automatic rotation (requires Lambda ARN)
+
+mappings:
+  # ── Application database credentials ────────────────────────────────────
+  - vault_path: "production/myapp/database"
+    asm_name: "prod/myapp/db-credentials"
+    sync: true
+    rotation_days: 30
+
+  - vault_path: "staging/myapp/database"
+    asm_name: "staging/myapp/db-credentials"
+    sync: true
+    rotation_days: 90
+
+  # ── API keys ────────────────────────────────────────────────────────────
+  - vault_path: "production/myapp/api-keys"
+    asm_name: "prod/myapp/api-keys"
+    sync: true
+    rotation_days: 0  # No automatic rotation
+
+  # ── Service-to-service auth ─────────────────────────────────────────────
+  - vault_path: "production/myapp/service-auth"
+    asm_name: "prod/myapp/service-auth"
+    sync: true
+    rotation_days: 7
+
+  # ── Disabled example (will be skipped) ──────────────────────────────────
+  - vault_path: "legacy/old-app/credentials"
+    asm_name: "legacy/old-app/credentials"
+    sync: false
+
+# ---------------------------------------------------------------------------
+# Azure Key Vault mappings
+# ---------------------------------------------------------------------------
+# Used by: azure-keyvault-bridge.sh
+#
+# Additional fields:
+#   akv_name        Azure Key Vault secret name (hyphens, not slashes)
+#   content_type    MIME type stored in AKV metadata (default: application/json)
+#   tags            Key-value metadata applied to the AKV secret
+
+# Uncomment and use as the mappings section when running the Azure bridge:
+#
+# mappings:
+#   - vault_path: "production/myapp/database"
+#     akv_name: "myapp-database-credentials"
+#     sync: true
+#     content_type: "application/json"
+#     tags:
+#       environment: production
+#       team: platform
+#       cost-center: "CC-1234"
+#
+#   - vault_path: "production/myapp/api-keys"
+#     akv_name: "myapp-api-keys"
+#     sync: true
+#     content_type: "application/json"
+#     tags:
+#       environment: production
+#       team: platform
+#
+#   - vault_path: "production/myapp/tls-cert"
+#     akv_name: "myapp-tls-certificate"
+#     sync: true
+#     content_type: "application/x-pem-file"
+#     tags:
+#       environment: production
+#       purpose: mtls
+
+# ---------------------------------------------------------------------------
+# GCP Secret Manager mappings
+# ---------------------------------------------------------------------------
+# Used by: gcp-secret-manager-bridge.sh
+#
+# Additional fields:
+#   gcp_name            GCP Secret Manager secret ID
+#   labels              Key-value labels applied to the GCP secret resource
+#   iam_conditions      IAM condition bindings for fine-grained access control
+
+# Uncomment and use as the mappings section when running the GCP bridge:
+#
+# mappings:
+#   - vault_path: "production/myapp/database"
+#     gcp_name: "myapp-database-credentials"
+#     sync: true
+#     labels:
+#       environment: production
+#       team: platform
+#     iam_conditions:
+#       - role: "roles/secretmanager.secretAccessor"
+#         member: "serviceAccount:myapp-prod@my-project.iam.gserviceaccount.com"
+#         condition:
+#           title: "time-limited-access"
+#           expression: "request.time < timestamp('2025-06-30T23:59:59Z')"
+#
+#   - vault_path: "production/myapp/api-keys"
+#     gcp_name: "myapp-api-keys"
+#     sync: true
+#     labels:
+#       environment: production
+#       team: platform
+#     iam_conditions:
+#       - role: "roles/secretmanager.secretAccessor"
+#         member: "serviceAccount:myapp-prod@my-project.iam.gserviceaccount.com"
+#
+#   - vault_path: "staging/myapp/database"
+#     gcp_name: "myapp-staging-database"
+#     sync: true
+#     labels:
+#       environment: staging
+
+# ---------------------------------------------------------------------------
+# Multi-cloud sync strategy (documentation)
+# ---------------------------------------------------------------------------
+#
+# When syncing the same secrets to multiple clouds, create separate mapping
+# files per provider (aws-mappings.yaml, azure-mappings.yaml, gcp-mappings.yaml)
+# or use this single file with the active mappings section uncommented for the
+# target provider.
+#
+# Recommended sync order for multi-cloud:
+#   1. Vault -> AWS  (vault-to-aws)
+#   2. Vault -> Azure (vault-to-azure)
+#   3. Vault -> GCP  (vault-to-gcp)
+#
+# This keeps Vault as the single source of truth and avoids circular sync
+# conflicts. Only use bidirectional mode when a specific cloud provider is
+# the authoritative source for certain secrets (e.g., AWS-native service
+# credentials that are rotated by ASM).

@@ -1,0 +1,179 @@
+# Weekly secret lifecycle metrics collection and reporting.
+# Runs all metrics collectors, calculates risk score, generates a
+# human-readable report, and posts it as a GitHub issue.
+
+name: Weekly Secret Lifecycle Report
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Artifact name of previous metrics JSON for trend comparison'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: weekly-report
+  cancel-in-progress: true
+
+jobs:
+  collect-and-report:
+    name: Collect Metrics & Generate Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssl jq python3
+
+      - name: Make scripts executable
+        run: |
+          chmod +x tools/metrics/collect-metrics.sh
+          chmod +x tools/metrics/risk-scorer.sh
+          chmod +x tools/metrics/generate-report.sh
+          chmod +x tools/secrets-doctor/doctor.sh
+          chmod +x tools/audit/cert_inventory.sh
+          chmod +x tools/audit/credential_age_report.sh
+          chmod +x tools/compliance/control_matrix.sh
+          chmod +x tools/scanning/scan_repo.sh
+          find tools/secrets-doctor/checks -name '*.sh' -exec chmod +x {} \;
+
+      - name: Download baseline artifact
+        if: github.event.inputs.baseline != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.baseline }}
+          path: /tmp/baseline
+        continue-on-error: true
+
+      - name: Collect metrics
+        id: collect
+        run: |
+          set -euo pipefail
+
+          BASELINE_ARG=""
+          if [[ -f /tmp/baseline/metrics-latest.json ]]; then
+            BASELINE_ARG="--baseline /tmp/baseline/metrics-latest.json"
+          fi
+
+          tools/metrics/collect-metrics.sh \
+            --output logs/metrics/metrics-latest.json \
+            $BASELINE_ARG \
+            --verbose || true
+
+          echo "has_metrics=true" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate risk score
+        id: score
+        if: steps.collect.outputs.has_metrics == 'true'
+        run: |
+          set -euo pipefail
+
+          SCORE_JSON=$(tools/metrics/risk-scorer.sh \
+            --input logs/metrics/metrics-latest.json \
+            --json 2>/dev/null || echo '{"risk_score":0,"rating":"UNKNOWN"}')
+
+          SCORE=$(echo "$SCORE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('risk_score',0))")
+          RATING=$(echo "$SCORE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('rating','UNKNOWN'))")
+
+          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+          echo "rating=$RATING" >> "$GITHUB_OUTPUT"
+
+          echo "$SCORE_JSON" > logs/metrics/risk-score.json
+
+      - name: Generate markdown report
+        id: report
+        if: steps.collect.outputs.has_metrics == 'true'
+        run: |
+          set -euo pipefail
+
+          tools/metrics/generate-report.sh \
+            --input logs/metrics/metrics-latest.json \
+            --format markdown \
+            > logs/metrics/report.md 2>/dev/null || true
+
+          echo "has_report=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub issue
+        if: steps.report.outputs.has_report == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let body = '';
+            try {
+              body = fs.readFileSync('logs/metrics/report.md', 'utf8');
+            } catch (e) {
+              body = '## Secret Lifecycle Report\n\nFailed to generate report. Check workflow logs.';
+            }
+
+            const score = '${{ steps.score.outputs.score }}';
+            const rating = '${{ steps.score.outputs.rating }}';
+            const date = new Date().toISOString().split('T')[0];
+
+            let icon = ':white_check_mark:';
+            if (parseInt(score) < 50) icon = ':x:';
+            else if (parseInt(score) < 70) icon = ':warning:';
+
+            const title = `${icon} [weekly-report] Secret Lifecycle Report — ${date} (Score: ${score}/100, ${rating})`;
+
+            body += `\n\n---\n`;
+            body += `_Workflow run: [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_\n`;
+
+            // Find existing open issue with weekly-report label
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'weekly-report',
+              state: 'open',
+            });
+
+            if (issues.data.length > 0) {
+              // Close old issue and create new one
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+            }
+
+            // Create new issue
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['weekly-report'],
+            });
+
+      - name: Upload metrics artifact
+        if: always() && steps.collect.outputs.has_metrics == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-${{ github.run_id }}
+          path: |
+            logs/metrics/metrics-latest.json
+            logs/metrics/risk-score.json
+            logs/metrics/report.md
+          retention-days: 90
+
+      - name: Fail on critical risk
+        if: steps.score.outputs.score != '' && steps.score.outputs.score < 30
+        run: |
+          echo "::error::Risk score is ${{ steps.score.outputs.score }}/100 (${{ steps.score.outputs.rating }}) — critical risk level"
+          exit 1

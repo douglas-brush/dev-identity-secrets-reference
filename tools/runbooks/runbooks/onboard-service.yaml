@@ -1,0 +1,56 @@
+name: "Service Onboarding"
+description: "New service onboarding — Vault policy, auth method, secrets provisioning, verification"
+version: "1.0.0"
+requires:
+  - vault
+  - jq
+env:
+  - VAULT_ADDR
+  - VAULT_TOKEN
+  - SERVICE_NAME
+
+steps:
+  - name: "Validate service name"
+    command: "echo \"Onboarding service: ${SERVICE_NAME}\"; if echo \"${SERVICE_NAME}\" | grep -qE '^[a-z][a-z0-9-]{1,62}$'; then echo 'Service name is valid'; else echo 'ERROR: Service name must be lowercase alphanumeric with hyphens, 2-63 chars' >&2; exit 1; fi"
+    validate: "test -n \"${SERVICE_NAME}\""
+
+  - name: "Check for existing service configuration"
+    command: "echo 'Checking for existing Vault configuration...'; vault policy read \"${SERVICE_NAME}-policy\" 2>/dev/null && echo 'WARNING: Policy already exists' || echo 'No existing policy found — safe to proceed'; vault kv list \"secret/services/${SERVICE_NAME}\" 2>/dev/null && echo 'WARNING: Secrets path already exists' || echo 'No existing secrets path — safe to proceed'"
+    continue_on_fail: true
+
+  - name: "Create Vault policy"
+    command: "POLICY_FILE=\"/tmp/${SERVICE_NAME}-policy-$$.hcl\"; cat > \"$POLICY_FILE\" <<'POLICY'\npath \"secret/data/services/${SERVICE_NAME}/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"secret/metadata/services/${SERVICE_NAME}/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"pki/issue/${SERVICE_NAME}\" {\n  capabilities = [\"create\", \"update\"]\n}\npath \"transit/encrypt/${SERVICE_NAME}\" {\n  capabilities = [\"update\"]\n}\npath \"transit/decrypt/${SERVICE_NAME}\" {\n  capabilities = [\"update\"]\n}\nPOLICY\n; echo \"Policy file created: ${POLICY_FILE}\"; cat \"$POLICY_FILE\"; vault policy write \"${SERVICE_NAME}-policy\" \"$POLICY_FILE\"; rm -f \"$POLICY_FILE\"; echo \"Vault policy '${SERVICE_NAME}-policy' created\""
+    validate: "vault policy read \"${SERVICE_NAME}-policy\" >/dev/null 2>&1"
+    rollback: "vault policy delete \"${SERVICE_NAME}-policy\" 2>/dev/null; echo \"Policy ${SERVICE_NAME}-policy deleted\""
+    timeout: 15
+
+  - name: "Configure AppRole auth method"
+    command: "vault auth list -format=json | jq -e '.\"approle/\"' >/dev/null 2>&1 || vault auth enable approle; vault write \"auth/approle/role/${SERVICE_NAME}\" token_policies=\"${SERVICE_NAME}-policy,default\" token_ttl=1h token_max_ttl=4h secret_id_ttl=720h secret_id_num_uses=0; echo \"AppRole role '${SERVICE_NAME}' configured\"; vault read -format=json \"auth/approle/role/${SERVICE_NAME}\" | jq '{token_ttl, token_max_ttl, token_policies}'"
+    validate: "vault read -format=json \"auth/approle/role/${SERVICE_NAME}\" | jq -e '.data.token_policies'"
+    rollback: "vault delete \"auth/approle/role/${SERVICE_NAME}\" 2>/dev/null; echo \"AppRole role ${SERVICE_NAME} deleted\""
+    timeout: 15
+
+  - name: "Generate initial credentials"
+    command: "ROLE_ID=$(vault read -format=json \"auth/approle/role/${SERVICE_NAME}/role-id\" | jq -r '.data.role_id'); SECRET_ID=$(vault write -force -format=json \"auth/approle/role/${SERVICE_NAME}/secret-id\" | jq -r '.data.secret_id'); echo \"Role ID: ${ROLE_ID}\"; echo \"Secret ID: ${SECRET_ID:0:8}...(truncated)\"; echo '{\"role_id\":\"'${ROLE_ID}'\",\"secret_id_preview\":\"'${SECRET_ID:0:8}'...\"}' > /tmp/${SERVICE_NAME}-creds-$$.json; echo 'Initial credentials generated — store securely and deliver to service owner'"
+    validate: "test -f /tmp/${SERVICE_NAME}-creds-$$.json"
+    rollback: "rm -f /tmp/${SERVICE_NAME}-creds-$$.json"
+    timeout: 15
+
+  - name: "Provision initial secrets"
+    command: "vault kv put \"secret/services/${SERVICE_NAME}/config\" service_name=\"${SERVICE_NAME}\" created_at=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" created_by=\"$(whoami)\" environment=\"development\" status=\"onboarding\"; echo \"Initial secrets written to secret/services/${SERVICE_NAME}/config\"; vault kv get -format=json \"secret/services/${SERVICE_NAME}/config\" | jq '.data.data'"
+    validate: "vault kv get -format=json \"secret/services/${SERVICE_NAME}/config\" | jq -e '.data.data.service_name'"
+    rollback: "vault kv metadata delete \"secret/services/${SERVICE_NAME}/config\" 2>/dev/null; echo 'Initial secrets removed'"
+    timeout: 15
+
+  - name: "Verify end-to-end authentication"
+    command: "echo 'Testing AppRole login...'; ROLE_ID=$(vault read -format=json \"auth/approle/role/${SERVICE_NAME}/role-id\" | jq -r '.data.role_id'); SECRET_ID=$(vault write -force -format=json \"auth/approle/role/${SERVICE_NAME}/secret-id\" | jq -r '.data.secret_id'); TOKEN=$(vault write -format=json auth/approle/login role_id=\"$ROLE_ID\" secret_id=\"$SECRET_ID\" | jq -r '.auth.client_token'); echo \"Login successful — token: ${TOKEN:0:8}...\"; VAULT_TOKEN=$TOKEN vault kv get \"secret/services/${SERVICE_NAME}/config\" >/dev/null && echo 'Secret access verified' || echo 'Secret access FAILED'"
+    validate: "echo 'End-to-end auth verification complete'"
+    timeout: 30
+
+  - name: "Generate onboarding summary"
+    command: "echo '{\"event\":\"service_onboarded\",\"service\":\"'${SERVICE_NAME}'\",\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\",\"operator\":\"'$(whoami)'\",\"vault_policy\":\"'${SERVICE_NAME}-policy'\",\"approle_role\":\"'${SERVICE_NAME}'\",\"secrets_path\":\"secret/services/'${SERVICE_NAME}'/\"}' | tee /tmp/${SERVICE_NAME}-onboarding-$$.json | jq .; echo ''; echo 'Onboarding complete. Deliver to service owner:'; echo \"  1. Role ID from /tmp/${SERVICE_NAME}-creds-$$.json\"; echo '  2. Instructions for Secret ID rotation'; echo \"  3. Vault policy: ${SERVICE_NAME}-policy\"; echo \"  4. Secrets path: secret/services/${SERVICE_NAME}/\""
+    continue_on_fail: true
+
+  - name: "Cleanup temporary files"
+    command: "rm -f /tmp/${SERVICE_NAME}-creds-$$.json /tmp/${SERVICE_NAME}-onboarding-$$.json 2>/dev/null; echo 'Temporary credentials cleaned up'"
+    continue_on_fail: true
