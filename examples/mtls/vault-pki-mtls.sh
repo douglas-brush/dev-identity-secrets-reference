@@ -304,7 +304,8 @@ rotate_certificates() {
     log "Rotating certificates — issuing new server and client certs"
 
     # Archive existing certificates
-    local archive_dir="${CERT_OUTPUT_DIR}/archive/$(date -u +%Y%m%dT%H%M%SZ)"
+    local archive_dir
+    archive_dir="${CERT_OUTPUT_DIR}/archive/$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "${archive_dir}"
 
     for f in server.pem server-key.pem client.pem client-key.pem; do

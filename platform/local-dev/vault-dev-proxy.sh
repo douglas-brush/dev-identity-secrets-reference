@@ -15,7 +15,8 @@ set -euo pipefail
 #   ./vault-dev-proxy.sh --template-dir ./templates
 # =============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 
 # --- Logging ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -166,9 +167,6 @@ create_ramdisk
 # --- Generate Agent Configuration ---
 generate_agent_config() {
   AGENT_CONFIG=$(mktemp /tmp/vault-agent-config-XXXXXX.hcl)
-
-  local token
-  token=$(vault print token)
 
   # Build template stanzas
   local template_block=""

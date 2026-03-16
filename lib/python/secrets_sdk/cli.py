@@ -180,7 +180,7 @@ def rotate_check(addr: str, paths: tuple[str, ...], max_age: float, json_out: bo
 
 @cli.command()
 @click.argument("file_path", type=click.Path(exists=True, resolve_path=True))
-@click.option("--output-format", type=click.Choice(["json", "yaml"]), default="", help="Force output format.")
+@click.option("--output-format", type=click.Choice(["json", "yaml"]), default=None, help="Force output format.")
 def decrypt(file_path: str, output_format: str) -> None:
     """Decrypt a SOPS-encrypted file and print the plaintext."""
     from secrets_sdk.sops import decrypt_file

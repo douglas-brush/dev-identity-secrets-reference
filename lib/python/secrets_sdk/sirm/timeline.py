@@ -14,7 +14,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from secrets_sdk.sirm.models import ClaimClassification, TimelineEvent
 
@@ -295,7 +295,7 @@ class Timeline:
         Raises:
             ValueError: If format is not recognized.
         """
-        exporters = {
+        exporters: dict[str, Callable[[], str]] = {
             "json": self.export_json,
             "csv": self.export_csv,
             "markdown": self.export_markdown,

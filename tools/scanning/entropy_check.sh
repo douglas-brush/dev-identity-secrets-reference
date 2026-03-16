@@ -5,8 +5,10 @@ set -euo pipefail
 # Scans files for high-entropy strings that may be secrets or credentials.
 # Reports file, line number, entropy score, and redacted snippet.
 
-readonly SCRIPT_NAME="$(basename "$0")"
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly ROOT_DIR
 
 # Defaults
 THRESHOLD="4.5"

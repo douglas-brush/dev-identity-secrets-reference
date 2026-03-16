@@ -1,0 +1,81 @@
+# time-bound-access.sentinel — Restrict access to business hours
+#
+# Purpose:  Prevent privileged operations outside of defined business hours.
+#           Reduces the window for credential theft exploitation and ensures
+#           that sensitive operations occur when teams are available to
+#           respond to anomalies.
+#
+# Deploy:   vault write sys/policies/egp/time-bound-access \
+#             policy="$(cat time-bound-access.sentinel)" \
+#             paths="kv/data/prod/*,database/creds/prod-*" \
+#             enforcement_level="soft-mandatory"
+#
+# NOTE:     Deployed as soft-mandatory so root tokens (break-glass) can
+#           override during off-hours incidents. All overrides are logged
+#           in the audit log with the override reason.
+
+import "time"
+import "strings"
+
+# ---------------------------------------------------------------------------
+# Configuration — adjust these for your organization's operating hours
+# ---------------------------------------------------------------------------
+
+# Business hours: Monday-Friday, 06:00 - 22:00 (local time)
+# Vault Sentinel time functions use the server's configured timezone.
+business_hour_start = 6
+business_hour_end   = 22
+
+# Day of week: 0 = Sunday, 1 = Monday, ... , 6 = Saturday
+business_day_start = 1  # Monday
+business_day_end   = 5  # Friday
+
+# ---------------------------------------------------------------------------
+# Rule: request must occur during business hours
+# ---------------------------------------------------------------------------
+within_business_hours = rule {
+    time.now.hour >= business_hour_start and
+    time.now.hour < business_hour_end
+}
+
+# ---------------------------------------------------------------------------
+# Rule: request must occur on a business day
+# ---------------------------------------------------------------------------
+is_business_day = rule {
+    time.day_of_week >= business_day_start and
+    time.day_of_week <= business_day_end
+}
+
+# ---------------------------------------------------------------------------
+# Rule: check if the token has break-glass policy attached
+# Break-glass tokens are exempt from time restrictions because incidents
+# don't respect business hours. The soft-mandatory enforcement level
+# provides an additional safety net (root can override).
+# ---------------------------------------------------------------------------
+is_break_glass = func() {
+    if "break-glass" in request.auth.token_policies {
+        return true
+    }
+    return false
+}
+
+# ---------------------------------------------------------------------------
+# Rule: token TTL must not exceed 4 hours for off-hours access
+# Even if overridden, limit the blast radius of off-hours tokens.
+# ---------------------------------------------------------------------------
+max_offhours_ttl_seconds = 14400  # 4 hours
+
+ttl_check = rule {
+    within_business_hours or
+    is_break_glass() or
+    request.auth.token_ttl <= max_offhours_ttl_seconds
+}
+
+# ---------------------------------------------------------------------------
+# Main rule: must be business hours OR break-glass
+# ---------------------------------------------------------------------------
+main = rule {
+    (within_business_hours and is_business_day) or
+    is_break_glass() and
+    ttl_check
+}

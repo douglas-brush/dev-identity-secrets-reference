@@ -172,40 +172,40 @@ rotate-sops: ## Dry-run SOPS key rotation check
 # === Signing & Ceremony ===
 sign: ## Sign artifacts using cosign/notation
 	@echo "$(GREEN)[*] Signing artifacts...$(NC)"
-	@./tools/signing/sign.sh
+	@./tools/signing/sign_artifact.sh
 
 verify: ## Verify artifact signatures
 	@echo "$(GREEN)[*] Verifying artifact signatures...$(NC)"
-	@./tools/signing/verify.sh
+	@./tools/signing/verify_artifact.sh
 
 ceremony-root: ## Run root CA key ceremony (dry-run by default)
 	@echo "$(GREEN)[*] Running root CA ceremony (dry-run)...$(NC)"
-	@./tools/ceremony/root_ceremony.sh --dry-run
+	@./tools/ceremony/root_ca_ceremony.sh --dry-run
 
 ceremony-intermediate: ## Run intermediate CA ceremony (dry-run by default)
 	@echo "$(GREEN)[*] Running intermediate CA ceremony (dry-run)...$(NC)"
-	@./tools/ceremony/intermediate_ceremony.sh --dry-run
+	@./tools/ceremony/intermediate_ca_ceremony.sh --dry-run
 
 # === SIRM Session Management ===
 sirm-init: ## Bootstrap a new SIRM session
 	@echo "$(GREEN)[*] Bootstrapping SIRM session...$(NC)"
-	@./tools/sirm/sirm.sh bootstrap
+	@./tools/sirm/sirm-bootstrap.sh
 
 sirm-status: ## Show current SIRM session status
-	@./tools/sirm/sirm.sh status
+	@./tools/sirm/sirm-session.sh status
 
 sirm-report: ## Generate SIRM session report
 	@echo "$(GREEN)[*] Generating SIRM session report...$(NC)"
-	@./tools/sirm/sirm.sh report
+	@./tools/sirm/sirm-session.sh report
 
 sirm-seal: ## Seal current SIRM session (irreversible)
 	@echo "$(YELLOW)[*] Sealing SIRM session (irreversible)...$(NC)"
-	@./tools/sirm/sirm.sh seal
+	@./tools/sirm/sirm-session.sh seal
 
 # === Enhanced Scanning ===
 scan-enhanced: ## Run enhanced secret scanner with DLP patterns
 	@echo "$(GREEN)[*] Running enhanced secret scan...$(NC)"
-	@./tools/scanning/enhanced_scan.sh
+	@./tools/scanning/scan_repo.sh
 
 entropy-check: ## Run entropy-based high-risk detection
 	@echo "$(GREEN)[*] Running entropy-based detection...$(NC)"
@@ -219,7 +219,7 @@ test-integration: ## Run integration tests (SOPS, PKI, SSH CA, Transit)
 # === Local Dev Proxy ===
 dev-proxy: ## Start local Vault dev proxy
 	@echo "$(GREEN)[*] Starting local Vault dev proxy...$(NC)"
-	@./platform/local-dev/vault_proxy.sh
+	@./platform/local-dev/vault-dev-proxy.sh
 
 # === Diagnostics ===
 doctor: ## Run secrets-doctor diagnostic tool

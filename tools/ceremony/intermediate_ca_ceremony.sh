@@ -7,8 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+export REPO_ROOT
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TIMESTAMP_SAFE="${TIMESTAMP//[:T]/-}"
+export TIMESTAMP_SAFE
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
@@ -158,6 +160,7 @@ esac
 check_prereqs() {
   log STEP "Checking prerequisites"
 
+  # shellcheck disable=SC2043  # single-element loop kept for extensibility
   for cmd in openssl; do
     if command -v "$cmd" &>/dev/null; then
       log OK "$cmd found: $(command -v "$cmd")"

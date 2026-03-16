@@ -173,8 +173,8 @@ while [[ $# -gt 0 ]]; do
     --artifact)                 ARTIFACT="$2"; shift 2 ;;
     --type)                     ARTIFACT_TYPE="$2"; shift 2 ;;
     --key)                      VAULT_KEY="$2"; shift 2 ;;
-    --certificate)              CERTIFICATE="$2"; shift 2 ;;
-    --certificate-chain)        CERTIFICATE_CHAIN="$2"; shift 2 ;;
+    --certificate)              CERTIFICATE="$2"; export CERTIFICATE; shift 2 ;;
+    --certificate-chain)        CERTIFICATE_CHAIN="$2"; export CERTIFICATE_CHAIN; shift 2 ;;
     --certificate-identity)     CERTIFICATE_IDENTITY="$2"; shift 2 ;;
     --certificate-oidc-issuer)  CERTIFICATE_OIDC_ISSUER="$2"; shift 2 ;;
     --output-format)            OUTPUT_FORMAT="$2"; shift 2 ;;

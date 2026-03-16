@@ -124,7 +124,7 @@ fetch_db_credentials() {
     export "${VAULT_ENV_PREFIX}DB_USERNAME=${username}"
     export "${VAULT_ENV_PREFIX}DB_PASSWORD=${password}"
     DB_LEASE_ID="${lease_id}"
-    DB_LEASE_TTL="${lease_duration}"
+    export DB_LEASE_TTL="${lease_duration}"
 
     log "DB creds acquired: user=${username} TTL=${lease_duration}s"
 }

@@ -169,6 +169,7 @@ LEAF_JSON=$(vault write -format=json "${INT_MOUNT}/issue/${PKI_ROLE}" \
 
 LEAF_CERT=$(echo "$LEAF_JSON" | jq -r '.data.certificate')
 LEAF_KEY=$(echo "$LEAF_JSON" | jq -r '.data.private_key')
+export LEAF_CHAIN
 LEAF_CHAIN=$(echo "$LEAF_JSON" | jq -r '.data.ca_chain[]' 2>/dev/null || echo "$INT_CERT")
 LEAF_SERIAL=$(echo "$LEAF_JSON" | jq -r '.data.serial_number')
 

@@ -39,6 +39,7 @@ step() {
 
 run() {
   printf '%b  $ %s%b\n' "$DIM" "$*" "$RESET"
+  # shellcheck disable=SC2294  # eval is intentional — demo commands may contain pipes/redirections
   eval "$@" 2>&1 | sed 's/^/    /'
   printf '\n'
 }

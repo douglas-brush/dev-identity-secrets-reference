@@ -5,11 +5,15 @@ set -euo pipefail
 # Runs gitleaks, plaintext pattern scanner, entropy checks, permission audits,
 # and .env file checks. Generates a consolidated report.
 
-readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly ROOT_DIR
 readonly REPORT_DIR="$ROOT_DIR/logs/scan-reports"
-readonly TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly TIMESTAMP
 
 # Flags
 JSON_OUTPUT=0
@@ -22,9 +26,9 @@ EXIT_CODE=0
 # Colors (disabled in JSON/CI mode or non-TTY)
 setup_colors() {
   if [[ -t 1 ]] && [[ $JSON_OUTPUT -eq 0 ]] && [[ $CI_MODE -eq 0 ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BOLD='\033[1m'; NC='\033[0m'
   else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; NC=''
+    RED=''; GREEN=''; YELLOW=''; BOLD=''; NC=''
   fi
 }
 
@@ -137,8 +141,7 @@ run_gitleaks() {
 
   gitleaks_args+=("--report-format" "json" "--report-path" "$report_file")
 
-  local gitleaks_exit=0
-  gitleaks "${gitleaks_args[@]}" 2>/dev/null || gitleaks_exit=$?
+  gitleaks "${gitleaks_args[@]}" 2>/dev/null || true
 
   local finding_count=0
   if [[ -f "$report_file" ]] && [[ -s "$report_file" ]]; then

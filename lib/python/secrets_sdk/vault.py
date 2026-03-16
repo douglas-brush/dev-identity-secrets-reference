@@ -12,8 +12,8 @@ import os
 import time
 from typing import Any
 
-import hvac  # type: ignore[import-untyped]
-import hvac.exceptions  # type: ignore[import-untyped]
+import hvac  # type: ignore[import-untyped,unused-ignore]
+import hvac.exceptions  # type: ignore[import-untyped,unused-ignore]
 
 from secrets_sdk.exceptions import (
     VaultAuthError,

@@ -1,0 +1,95 @@
+# require-reason.sentinel — Require reason header on privileged operations
+#
+# Purpose:  Enforce that all requests to privileged Vault paths include a
+#           meaningful reason via the X-Vault-Reason request header. This
+#           creates an audit trail of *why* secrets were accessed, not just
+#           *that* they were accessed.
+#
+# Deploy:   vault write sys/policies/egp/require-reason \
+#             policy="$(cat require-reason.sentinel)" \
+#             paths="kv/data/prod/*,database/creds/prod-*,sys/policies/*" \
+#             enforcement_level="hard-mandatory"
+#
+# Client usage:
+#   vault kv get -header "X-Vault-Reason=INCIDENT-2024-001 investigating DB leak" \
+#     kv/prod/apps/payments/config
+#
+# Or via API:
+#   curl -H "X-Vault-Token: ..." \
+#        -H "X-Vault-Reason: INCIDENT-2024-001 investigating DB leak" \
+#        https://vault.example.com/v1/kv/data/prod/apps/payments/config
+
+import "strings"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Minimum length for the reason string to prevent empty or trivial reasons
+# like "test" or "asdf"
+min_reason_length = 10
+
+# Paths that are exempt from the reason requirement (health checks, self-lookup)
+exempt_paths = [
+    "auth/token/lookup-self",
+    "sys/health",
+]
+
+# ---------------------------------------------------------------------------
+# Helper: check if current path is exempt
+# ---------------------------------------------------------------------------
+is_exempt = func() {
+    for exempt_paths as path {
+        if strings.has_prefix(request.path, path) {
+            return true
+        }
+    }
+    return false
+}
+
+# ---------------------------------------------------------------------------
+# Rule: reason header must be present and meaningful
+# ---------------------------------------------------------------------------
+reason_present = rule {
+    is_exempt() or (
+        "X-Vault-Reason" in keys(request.headers) and
+        length(request.headers["X-Vault-Reason"]) > 0
+    )
+}
+
+# ---------------------------------------------------------------------------
+# Rule: reason must meet minimum length requirement
+# ---------------------------------------------------------------------------
+reason_meaningful = rule {
+    is_exempt() or (
+        "X-Vault-Reason" in keys(request.headers) and
+        length(request.headers["X-Vault-Reason"]) >= min_reason_length
+    )
+}
+
+# ---------------------------------------------------------------------------
+# Rule: reason must not be a known placeholder
+# ---------------------------------------------------------------------------
+known_placeholders = [
+    "test",
+    "testing",
+    "asdf",
+    "reason",
+    "placeholder",
+    "n/a",
+    "none",
+]
+
+reason_not_placeholder = rule {
+    is_exempt() or (
+        "X-Vault-Reason" not in keys(request.headers) or
+        strings.to_lower(request.headers["X-Vault-Reason"]) not in known_placeholders
+    )
+}
+
+# ---------------------------------------------------------------------------
+# Main rule: all checks must pass
+# ---------------------------------------------------------------------------
+main = rule {
+    reason_present and reason_meaningful and reason_not_placeholder
+}

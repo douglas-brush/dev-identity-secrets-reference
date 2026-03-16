@@ -15,7 +15,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from secrets_sdk.sirm.context import ContextLoader
 from secrets_sdk.sirm.models import (
@@ -72,7 +72,7 @@ class SIRMBootstrap:
         Raises:
             RuntimeError: If a critical phase fails.
         """
-        phases = [
+        phases: list[Callable[..., PhaseReport]] = [
             self._phase1_environment,
             self._phase2_identity,
             self._phase3_context,

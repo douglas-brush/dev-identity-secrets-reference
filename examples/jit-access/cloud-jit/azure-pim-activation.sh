@@ -19,7 +19,8 @@
 
 set -euo pipefail
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly DEFAULT_DURATION="1h"
 readonly MAX_DURATION_SECONDS=28800  # 8 hours (PIM default max)
 readonly POLL_INTERVAL=5
@@ -279,7 +280,7 @@ elif [[ "${activation_status}" == "PendingApproval" ]]; then
 fi
 
 EXPIRY_TIME=$(date -u -d "+${DURATION_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -v+${DURATION_SECONDS}S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v+"${DURATION_SECONDS}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || echo "unknown")
 
 # ---------------------------------------------------------------------------

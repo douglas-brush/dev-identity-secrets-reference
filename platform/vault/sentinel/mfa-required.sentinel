@@ -1,0 +1,108 @@
+# mfa-required.sentinel — Require MFA identity group for admin operations
+#
+# Purpose:  Enforce that administrative Vault operations (policy changes,
+#           auth configuration, mount management, audit configuration) can
+#           only be performed by identities that belong to an MFA-verified
+#           identity group. Prevents privilege escalation via stolen tokens
+#           that lack MFA verification.
+#
+# Deploy:   vault write sys/policies/egp/mfa-required \
+#             policy="$(cat mfa-required.sentinel)" \
+#             paths="sys/policies/*,sys/auth/*,sys/mounts/*,sys/audit/*" \
+#             enforcement_level="hard-mandatory"
+#
+# Prerequisites:
+#   1. Configure an MFA method: vault write sys/mfa/method/totp/vault-totp ...
+#   2. Create an identity group "mfa-verified" for users who have completed MFA
+#   3. Configure login MFA enforcement to add users to this group on MFA success
+
+import "strings"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# The identity group name that indicates MFA verification.
+# Users are added to this group after successful MFA challenge.
+mfa_group_name = "mfa-verified"
+
+# Paths that are exempt from MFA (read-only health checks)
+exempt_paths = [
+    "sys/health",
+    "sys/seal-status",
+]
+
+# Operations that are exempt (reads don't need MFA, only mutations)
+exempt_operations = [
+    "read",
+    "list",
+]
+
+# ---------------------------------------------------------------------------
+# Helper: check if current path is exempt
+# ---------------------------------------------------------------------------
+is_exempt_path = func() {
+    for exempt_paths as path {
+        if strings.has_prefix(request.path, path) {
+            return true
+        }
+    }
+    return false
+}
+
+# ---------------------------------------------------------------------------
+# Helper: check if current operation is exempt (read/list only)
+# ---------------------------------------------------------------------------
+is_exempt_operation = func() {
+    if request.operation in exempt_operations {
+        return true
+    }
+    return false
+}
+
+# ---------------------------------------------------------------------------
+# Rule: entity must belong to the MFA-verified identity group
+# ---------------------------------------------------------------------------
+has_mfa_group = rule {
+    is_exempt_path() or
+    is_exempt_operation() or
+    mfa_group_name in identity.groups.names
+}
+
+# ---------------------------------------------------------------------------
+# Rule: token must have an associated identity entity
+# Prevents orphan tokens or tokens without identity from performing
+# admin operations, even if their ACL policy allows it.
+# ---------------------------------------------------------------------------
+has_identity = rule {
+    is_exempt_path() or
+    is_exempt_operation() or
+    length(identity.entity.id) > 0
+}
+
+# ---------------------------------------------------------------------------
+# Rule: entity must not be a service account performing admin ops
+# Service accounts (identified by metadata flag) should use separate
+# policies, not admin policies. This catches misconfigured service accounts.
+# ---------------------------------------------------------------------------
+not_service_account = func() {
+    if "service_account" in keys(identity.entity.metadata) {
+        if identity.entity.metadata["service_account"] == "true" {
+            return false
+        }
+    }
+    return true
+}
+
+service_account_check = rule {
+    is_exempt_path() or
+    is_exempt_operation() or
+    not_service_account()
+}
+
+# ---------------------------------------------------------------------------
+# Main rule: all checks must pass for admin operations
+# ---------------------------------------------------------------------------
+main = rule {
+    has_identity and has_mfa_group and service_account_check
+}

@@ -22,10 +22,12 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly DEFAULT_DURATION="30m"
 readonly MAX_DURATION_SECONDS=7200  # 2 hours hard cap
-readonly BREAK_GLASS_MAX_SECONDS=7200
+readonly BREAK_GLASS_MAX_SECONDS=7200  # exported for subprocesses
+export BREAK_GLASS_MAX_SECONDS
 readonly POLL_INTERVAL=10
 readonly POLL_TIMEOUT=3600  # 1 hour max wait for approval
 
@@ -379,7 +381,7 @@ output_result() {
                 --arg scope "${SCOPE}" \
                 --arg reason "${REASON}" \
                 --arg duration "${DURATION}" \
-                --arg expires "$(date -u -d "+${DURATION_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+${DURATION_SECONDS}S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')" \
+                --arg expires "$(date -u -d "+${DURATION_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+"${DURATION_SECONDS}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')" \
                 --argjson creds "${creds:-null}" \
                 '{
                     status: $status,

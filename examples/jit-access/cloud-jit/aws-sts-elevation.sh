@@ -17,7 +17,8 @@
 
 set -euo pipefail
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly DEFAULT_DURATION="1h"
 readonly MAX_DURATION_SECONDS=43200  # 12 hours (STS max)
 

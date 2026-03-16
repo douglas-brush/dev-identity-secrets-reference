@@ -87,6 +87,7 @@ vault write -f "${TRANSIT_MOUNT}/keys/${KEY_NAME}" 2>/dev/null
 KEY_INFO=$(vault read -format=json "${TRANSIT_MOUNT}/keys/${KEY_NAME}" 2>/dev/null || echo "{}")
 KEY_TYPE=$(echo "$KEY_INFO" | jq -r '.data.type // empty')
 KEY_VERSION=$(echo "$KEY_INFO" | jq -r '.data.latest_version // 0')
+export MIN_DECRYPT
 MIN_DECRYPT=$(echo "$KEY_INFO" | jq -r '.data.min_decryption_version // 0')
 
 assert "Transit key created" "$([ -n "$KEY_TYPE" ] && echo true || echo false)"

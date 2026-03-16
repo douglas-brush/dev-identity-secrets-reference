@@ -318,7 +318,7 @@ class SessionReport:
             )
 
         if self._findings:
-            by_confidence = {}
+            by_confidence: dict[str, int] = {}
             for f in self._findings:
                 level = f.confidence.value
                 by_confidence[level] = by_confidence.get(level, 0) + 1

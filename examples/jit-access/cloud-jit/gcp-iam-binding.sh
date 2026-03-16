@@ -17,7 +17,8 @@
 
 set -euo pipefail
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly DEFAULT_DURATION="1h"
 readonly MAX_DURATION_SECONDS=28800  # 8 hours
 
@@ -83,8 +84,8 @@ REASON=""
 DURATION="${DEFAULT_DURATION}"
 PROJECT=""
 MEMBER=""
-RESOURCE_TYPE="project"
-RESOURCE_ID=""
+export RESOURCE_TYPE="project"
+export RESOURCE_ID=""
 OUTPUT_FORMAT="text"
 CLEANUP_MODE=false
 
@@ -227,7 +228,7 @@ info "Authenticated member: ${MEMBER}"
 # Calculate expiry timestamp in RFC 3339
 START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EXPIRY_TIME=$(date -u -d "+${DURATION_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -v+${DURATION_SECONDS}S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    || date -u -v+"${DURATION_SECONDS}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
 
 if [[ -z "${EXPIRY_TIME}" ]]; then
     err "Failed to calculate expiry time"
@@ -252,9 +253,7 @@ gcloud_args=(
     --format=json
 )
 
-binding_result=$(gcloud "${gcloud_args[@]}" 2>&1)
-
-if [[ $? -ne 0 ]]; then
+if ! binding_result=$(gcloud "${gcloud_args[@]}" 2>&1); then
     err "Failed to create IAM binding"
     err "${binding_result}"
     exit 1

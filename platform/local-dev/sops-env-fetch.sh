@@ -14,7 +14,8 @@ set -euo pipefail
 #   ./sops-env-fetch.sh --file secrets.enc.json --export
 # =============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 
 # --- Logging ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -100,6 +101,7 @@ case "$SOPS_FILE" in
   *.json)       FORMAT="json" ;;
   *)            die "Unsupported file extension. Use .yaml, .yml, or .json" ;;
 esac
+export FORMAT  # available to subprocesses for format-aware handling
 
 # --- Decrypt and convert to env vars ---
 # Decryption happens entirely in memory via pipe to jq.

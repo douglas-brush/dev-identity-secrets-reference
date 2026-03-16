@@ -406,15 +406,12 @@ phase5_dashboard() {
     return 0
   fi
 
-  local status_color status_text
+  local status_color
   if [[ $FAIL_COUNT -gt 0 ]]; then
-    status_text="RED"
     status_color="$(_red 'RED')"
   elif [[ $WARN_COUNT -gt 0 ]]; then
-    status_text="YELLOW"
     status_color="$(_yellow 'YELLOW')"
   else
-    status_text="GREEN"
     status_color="$(_green 'GREEN')"
   fi
 

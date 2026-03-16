@@ -1,0 +1,223 @@
+# Weekly certificate inventory and expiry monitoring.
+# Scans repository files for certificates, flags expired/expiring/weak,
+# and posts results as an issue comment or creates a new issue.
+
+name: Certificate Monitor
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: 'Days before expiry to flag as EXPIRING_SOON'
+        required: false
+        default: '30'
+  pull_request:
+    paths:
+      - '**/*.pem'
+      - '**/*.crt'
+      - '**/*.cert'
+      - '**/*.p12'
+      - '**/*.pfx'
+      - 'tools/audit/cert_inventory.sh'
+      - 'tools/audit/cert_monitor.sh'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: cert-monitor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cert-scan:
+    name: Certificate Inventory Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssl jq
+
+      - name: Run certificate monitor
+        id: monitor
+        run: |
+          set -euo pipefail
+          THRESHOLD="${{ github.event.inputs.threshold || '30' }}"
+
+          # Run in CI mode against repo files
+          chmod +x tools/audit/cert_inventory.sh tools/audit/cert_monitor.sh
+          tools/audit/cert_monitor.sh \
+            --ci \
+            --threshold "$THRESHOLD" \
+            -- --path "${{ github.workspace }}" || true
+
+          # Capture JSON output for downstream steps
+          if [[ -f logs/cert-inventory-latest.json ]]; then
+            echo "has_results=true" >> "$GITHUB_OUTPUT"
+
+            # Extract stats
+            TOTAL=$(jq -r '.total_certificates // 0' logs/cert-inventory-latest.json)
+            EXPIRED=$(jq '[.certificates[]? | select(.status == "EXPIRED")] | length' logs/cert-inventory-latest.json)
+            EXPIRING=$(jq '[.certificates[]? | select(.status == "EXPIRING_SOON")] | length' logs/cert-inventory-latest.json)
+            WEAK=$(jq '[.certificates[]? | select(.status == "WEAK_KEY")] | length' logs/cert-inventory-latest.json)
+            STATUS=$(jq -r '.overall_status // "UNKNOWN"' logs/cert-inventory-latest.json)
+
+            echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+            echo "expired=$EXPIRED" >> "$GITHUB_OUTPUT"
+            echo "expiring=$EXPIRING" >> "$GITHUB_OUTPUT"
+            echo "weak=$WEAK" >> "$GITHUB_OUTPUT"
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_results=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.monitor.outputs.has_results == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('logs/cert-inventory-latest.json', 'utf8'));
+            const total = data.total_certificates || 0;
+            const status = data.overall_status || 'UNKNOWN';
+
+            const expired = (data.certificates || []).filter(c => c.status === 'EXPIRED');
+            const expiring = (data.certificates || []).filter(c => c.status === 'EXPIRING_SOON');
+            const weak = (data.certificates || []).filter(c => c.status === 'WEAK_KEY');
+
+            let icon = ':white_check_mark:';
+            if (expired.length > 0) icon = ':x:';
+            else if (expiring.length > 0 || weak.length > 0) icon = ':warning:';
+
+            let body = `## ${icon} Certificate Monitor Report\n\n`;
+            body += `| Metric | Count |\n|--------|-------|\n`;
+            body += `| Total certificates | ${total} |\n`;
+            body += `| Expired | ${expired.length} |\n`;
+            body += `| Expiring soon | ${expiring.length} |\n`;
+            body += `| Weak keys | ${weak.length} |\n\n`;
+
+            if (expired.length > 0) {
+              body += `### :x: Expired Certificates\n\n`;
+              body += `| Path | Subject | Expired |\n|------|---------|--------|\n`;
+              expired.forEach(c => {
+                body += `| \`${c.path}\` | ${c.subject || 'n/a'} | ${c.not_after || 'n/a'} |\n`;
+              });
+              body += `\n`;
+            }
+
+            if (expiring.length > 0) {
+              body += `### :warning: Expiring Soon\n\n`;
+              body += `| Path | Subject | Expires |\n|------|---------|--------|\n`;
+              expiring.forEach(c => {
+                body += `| \`${c.path}\` | ${c.subject || 'n/a'} | ${c.not_after || 'n/a'} |\n`;
+              });
+              body += `\n`;
+            }
+
+            if (weak.length > 0) {
+              body += `### :warning: Weak Keys\n\n`;
+              body += `| Path | Key Type | Key Size | Flags |\n|------|----------|----------|-------|\n`;
+              weak.forEach(c => {
+                body += `| \`${c.path}\` | ${c.key_type || 'n/a'} | ${c.key_size || 'n/a'} | ${c.flags || ''} |\n`;
+              });
+              body += `\n`;
+            }
+
+            body += `\n---\n_Generated by cert-monitor workflow at ${data.timestamp}_\n`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Create or update issue (scheduled)
+        if: github.event_name == 'schedule' && steps.monitor.outputs.status == 'ACTION_REQUIRED'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('logs/cert-inventory-latest.json', 'utf8'));
+
+            const expired = (data.certificates || []).filter(c => c.status === 'EXPIRED');
+            const expiring = (data.certificates || []).filter(c => c.status === 'EXPIRING_SOON');
+            const weak = (data.certificates || []).filter(c => c.status === 'WEAK_KEY');
+
+            let body = `## Certificate Monitor Alert\n\n`;
+            body += `**Status:** ACTION_REQUIRED\n`;
+            body += `**Scan time:** ${data.timestamp}\n\n`;
+
+            if (expired.length > 0) {
+              body += `### Expired Certificates (${expired.length})\n\n`;
+              expired.forEach(c => {
+                body += `- \`${c.path}\` — expired: ${c.not_after || 'unknown'}\n`;
+              });
+              body += `\n`;
+            }
+
+            if (expiring.length > 0) {
+              body += `### Expiring Soon (${expiring.length})\n\n`;
+              expiring.forEach(c => {
+                body += `- \`${c.path}\` — expires: ${c.not_after || 'unknown'}\n`;
+              });
+              body += `\n`;
+            }
+
+            if (weak.length > 0) {
+              body += `### Weak Keys (${weak.length})\n\n`;
+              weak.forEach(c => {
+                body += `- \`${c.path}\` — ${c.flags || c.key_type + '-' + c.key_size}\n`;
+              });
+            }
+
+            // Find existing open issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'cert-monitor',
+              state: 'open'
+            });
+
+            if (issues.data.length > 0) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: body
+              });
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[cert-monitor] Certificate issues detected — ${data.timestamp.split('T')[0]}`,
+                body: body,
+                labels: ['cert-monitor']
+              });
+            }
+
+      - name: Upload inventory artifact
+        if: always() && steps.monitor.outputs.has_results == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cert-inventory-${{ github.run_id }}
+          path: logs/cert-inventory-latest.json
+          retention-days: 90
+
+      - name: Fail on issues (CI gate)
+        if: steps.monitor.outputs.status == 'ACTION_REQUIRED'
+        run: |
+          echo "::error::Certificate issues detected: ${{ steps.monitor.outputs.expired }} expired, ${{ steps.monitor.outputs.expiring }} expiring, ${{ steps.monitor.outputs.weak }} weak"
+          exit 1
