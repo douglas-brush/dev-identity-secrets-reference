@@ -210,7 +210,7 @@ jobs:
 
       - name: Upload inventory artifact
         if: always() && steps.monitor.outputs.has_results == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cert-inventory-${{ github.run_id }}
           path: logs/cert-inventory-latest.json
